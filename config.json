@@ -29,6 +29,17 @@
     "vosk_model_path": "models/vosk-model-small-en-us-0.15",
     "google_language": "en-US"
   },
+  "acoustic": {
+    "segment_seconds": 30,
+    "overlap_seconds": 5,
+    "fpcalc_path": "fpcalc",
+    "max_bit_error": 5,
+    "align_window": 8,
+    "min_overlap_frames": 10,
+    "confidence_threshold": 0.30,
+    "index_stride": 1,
+    "query_chunk_seconds": 15
+  },
   "opensubtitles": {
     "provider": "auto",
     "api_key": "c0OzS5ibu6XHtmWGJW1QyBY9MyESAhVf",

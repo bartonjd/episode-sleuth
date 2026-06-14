@@ -65,7 +65,8 @@ def pcm_to_segment(pcm_bytes, sample_rate):
     return AudioSegment(data=pcm_bytes, sample_width=2, frame_rate=sample_rate, channels=1)
 
 
-def run_live(db, fp_cfg, transcriber, cfg, max_seconds=None, once=False):
+def run_live(db, fp_cfg, transcriber, cfg, max_seconds=None, once=False,
+             use_phonetic=True, use_acoustic=False, ac_cfg=None):
     audio_cfg = cfg.get("audio", {})
     match_cfg = cfg.get("matching", {})
     sr = audio_cfg.get("sample_rate", 16000)
@@ -74,8 +75,19 @@ def run_live(db, fp_cfg, transcriber, cfg, max_seconds=None, once=False):
     threshold = match_cfg.get("confidence_threshold", 0.15)
     min_matches = match_cfg.get("min_matches", 3)
 
+    if use_acoustic:
+        import acoustic_fingerprint as af
+        ac_threshold = ac_cfg.confidence_threshold
+        # Acoustic needs a longer window to produce enough frames.
+        ac_window_bytes = ac_cfg.query_chunk_seconds * sr * 2
+        ac_buf = bytearray()
+        last_ac_eval = 0.0
+
     pa, stream, fpb = open_microphone(sr)
-    logging.info("Listening on microphone (%d Hz). Press Ctrl+C to stop.", sr)
+    methods = "+".join([m for m, on in (("phonetic", use_phonetic),
+                                        ("acoustic", use_acoustic)) if on])
+    logging.info("Listening on microphone (%d Hz) [%s]. Press Ctrl+C to stop.",
+                 sr, methods)
 
     window_bytes = window_s * sr * 2          # 16-bit
     step_bytes = max(1, (window_s - overlap_s)) * sr * 2
@@ -88,28 +100,44 @@ def run_live(db, fp_cfg, transcriber, cfg, max_seconds=None, once=False):
         while True:
             data = stream.read(fpb, exception_on_overflow=False)
             buf.extend(data)
+            if use_acoustic:
+                ac_buf.extend(data)
+                if len(ac_buf) > ac_window_bytes:
+                    del ac_buf[:len(ac_buf) - ac_window_bytes]
 
             if len(buf) >= window_bytes:
-                seg = pcm_to_segment(bytes(buf[-window_bytes:]), sr)
-                text = transcriber.transcribe_segment(seg)
+                # --- phonetic path ---
+                if use_phonetic and transcriber is not None:
+                    seg = pcm_to_segment(bytes(buf[-window_bytes:]), sr)
+                    text = transcriber.transcribe_segment(seg)
+                    if text:
+                        logging.info("heard: %s", text[:70])
+                        new_hashes = [h for (h, _s) in fingerprint_text(text, fp_cfg)]
+                        recent_hashes.extend(new_hashes)
+                        query = list(recent_hashes)
+                        rows = db.lookup(query)
+                        results = score_matches(query, rows, match_cfg)
+                        if results and results[0].confidence >= threshold \
+                                and results[0].match_count >= min_matches:
+                            print_live_result(results, threshold, method="phonetic")
+                            if once:
+                                break
+                    elif once and not use_acoustic:
+                        logging.info("(no speech detected in window)")
                 # slide window forward
                 del buf[:step_bytes]
 
-                if text:
-                    logging.info("heard: %s", text[:70])
-                    new_hashes = [h for (h, _s) in fingerprint_text(text, fp_cfg)]
-                    recent_hashes.extend(new_hashes)
-
-                    query = list(recent_hashes)
-                    rows = db.lookup(query)
-                    results = score_matches(query, rows, match_cfg)
-                    if results and results[0].confidence >= threshold \
-                            and results[0].match_count >= min_matches:
-                        print_live_result(results, threshold)
+            # --- acoustic path (evaluated on its own cadence) ---
+            if use_acoustic and len(ac_buf) >= ac_window_bytes:
+                now = time.time()
+                if now - last_ac_eval >= max(1, window_s - overlap_s):
+                    last_ac_eval = now
+                    ac_results = af.match_acoustic_pcm(
+                        bytes(ac_buf), sr, 1, db, ac_cfg)
+                    if ac_results and ac_results[0].confidence >= ac_threshold:
+                        print_live_result(ac_results, ac_threshold, method="acoustic")
                         if once:
                             break
-                elif once:
-                    logging.info("(no speech detected in window)")
 
             if max_seconds and (time.time() - start_time) > max_seconds:
                 logging.info("Reached time limit (%ss).", max_seconds)
@@ -122,13 +150,19 @@ def run_live(db, fp_cfg, transcriber, cfg, max_seconds=None, once=False):
         pa.terminate()
 
 
-def print_live_result(results, threshold):
+def print_live_result(results, threshold, method="phonetic"):
     best = results[0]
     print("\n" + "=" * 60)
-    print(f">>> IDENTIFIED: {best.media.label()}")
-    print(f"    confidence : {best.confidence:.1%}  ({best.match_count} hash hits)")
-    if best.window_start_ms is not None:
-        print(f"    approx time: {best.window_start_ms/1000:.0f}s into source")
+    print(f">>> IDENTIFIED ({method}): {best.media.label()}")
+    if method == "acoustic":
+        print(f"    confidence : {best.confidence:.1%}  "
+              f"({best.matched_frames}/{best.query_frames} frames)")
+        if getattr(best, "ref_start_ms", None) is not None:
+            print(f"    approx time: {best.ref_start_ms/1000:.0f}s into source")
+    else:
+        print(f"    confidence : {best.confidence:.1%}  ({best.match_count} hash hits)")
+        if getattr(best, "window_start_ms", None) is not None:
+            print(f"    approx time: {best.window_start_ms/1000:.0f}s into source")
     if len(results) > 1:
         runners = ", ".join(f"{r.media.label()} ({r.confidence:.0%})"
                             for r in results[1:3])
@@ -136,10 +170,16 @@ def print_live_result(results, threshold):
     print("=" * 60 + "\n")
 
 
-def run_file_fallback(path, db, fp_cfg, transcriber, cfg):
+def run_file_fallback(path, db, fp_cfg, transcriber, cfg,
+                      use_phonetic=True, use_acoustic=False, ac_cfg=None):
     """Identify from a recorded file (useful when no mic is available)."""
     import fingerprint_audio
-    fingerprint_audio.identify_audio_file(path, db, fp_cfg, transcriber, cfg)
+    if use_acoustic:
+        fingerprint_audio.identify_combined(
+            path, db, fp_cfg, ac_cfg, transcriber, cfg,
+            use_phonetic, use_acoustic)
+    else:
+        fingerprint_audio.identify_audio_file(path, db, fp_cfg, transcriber, cfg)
 
 
 def main(argv=None):
@@ -147,6 +187,12 @@ def main(argv=None):
     parser.add_argument("--seconds", type=int, help="Stop after N seconds")
     parser.add_argument("--once", action="store_true",
                         help="Stop after the first confident match")
+    parser.add_argument("--acoustic", action="store_true",
+                        help="Use ACOUSTIC (Chromaprint) matching only "
+                             "(identify by sound, no transcription)")
+    parser.add_argument("--both", action="store_true",
+                        help="Use BOTH phonetic (dialogue) and acoustic (sound) "
+                             "matching and report whichever is more confident")
     parser.add_argument("--from-file",
                         help="Identify from a recorded audio file instead of the mic")
     parser.add_argument("--config")
@@ -157,29 +203,50 @@ def main(argv=None):
     setup_logging(cfg.get("logging", {}).get("level", "INFO"))
     fp_cfg = FingerprintConfig.from_config(cfg)
 
+    # Decide which method(s) to use. Default is phonetic only.
+    use_acoustic = args.acoustic or args.both
+    use_phonetic = args.both or not args.acoustic
+
+    import acoustic_fingerprint as af
+    ac_cfg = af.AcousticConfig.from_config(cfg)
+
     db_path = args.db or cfg.get("database", {}).get("path", "fingerprints.db")
     if not os.path.isabs(db_path):
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), db_path)
     db = FingerprintDB(db_path)
 
-    if db.stats()["fingerprints"] == 0:
-        logging.error("Fingerprint database is empty. Run create_fingerprint.py first.")
+    stats = db.stats()
+    if use_phonetic and stats["fingerprints"] == 0 and not use_acoustic:
+        logging.error("Phonetic fingerprint database is empty. "
+                      "Run create_fingerprint.py first.")
+        db.close()
+        return 1
+    if use_acoustic and stats.get("acoustic_segments", 0) == 0 and not use_phonetic:
+        logging.error("Acoustic fingerprint database is empty. "
+                      "Run create_acoustic_fingerprint.py first.")
         db.close()
         return 1
 
-    try:
-        transcriber = stt_utils.get_transcriber(cfg)
-    except Exception as exc:
-        logging.error("Could not initialise STT engine: %s", exc)
-        db.close()
-        return 2
+    # STT is only needed for the phonetic method.
+    transcriber = None
+    if use_phonetic:
+        try:
+            transcriber = stt_utils.get_transcriber(cfg)
+        except Exception as exc:
+            logging.error("Could not initialise STT engine: %s", exc)
+            db.close()
+            return 2
 
     try:
         if args.from_file:
-            run_file_fallback(args.from_file, db, fp_cfg, transcriber, cfg)
+            run_file_fallback(args.from_file, db, fp_cfg, transcriber, cfg,
+                              use_phonetic=use_phonetic, use_acoustic=use_acoustic,
+                              ac_cfg=ac_cfg)
         else:
             run_live(db, fp_cfg, transcriber, cfg,
-                     max_seconds=args.seconds, once=args.once)
+                     max_seconds=args.seconds, once=args.once,
+                     use_phonetic=use_phonetic, use_acoustic=use_acoustic,
+                     ac_cfg=ac_cfg)
         return 0
     finally:
         db.close()

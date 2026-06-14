@@ -265,6 +265,43 @@ class FingerprintDB:
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fp_hash ON fingerprints(hash)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fp_media ON fingerprints(media_id)")
+
+        # --- Acoustic (Chromaprint) fingerprint tables -----------------------
+        # One row per audio SEGMENT (e.g. 30 s). The raw Chromaprint fingerprint
+        # (list of uint32 frames) is stored as a BLOB so it can be re-aligned
+        # against a query for an exact bit-error-rate score.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS acoustic_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_id INTEGER NOT NULL,
+                segment_index INTEGER,
+                start_ms INTEGER,
+                end_ms INTEGER,
+                num_frames INTEGER,
+                fingerprint BLOB,
+                FOREIGN KEY(media_id) REFERENCES media(id)
+            )
+            """
+        )
+        # Inverted index of individual sub-fingerprints (one Chromaprint frame
+        # integer) -> segment + position, for fast candidate lookup / offset
+        # histogram alignment.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS acoustic_index (
+                subfp INTEGER NOT NULL,
+                segment_id INTEGER NOT NULL,
+                media_id INTEGER NOT NULL,
+                position INTEGER,
+                FOREIGN KEY(segment_id) REFERENCES acoustic_segments(id),
+                FOREIGN KEY(media_id) REFERENCES media(id)
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ac_subfp ON acoustic_index(subfp)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ac_seg ON acoustic_index(segment_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ac_seg_media ON acoustic_segments(media_id)")
         self.conn.commit()
 
     def get_or_create_media(self, info: MediaInfo) -> int:
@@ -310,8 +347,114 @@ class FingerprintDB:
         )
         for row in cur.fetchall():
             cur.execute("DELETE FROM fingerprints WHERE media_id=?", (row["id"],))
+            cur.execute("DELETE FROM acoustic_index WHERE media_id=?", (row["id"],))
+            cur.execute("DELETE FROM acoustic_segments WHERE media_id=?", (row["id"],))
             cur.execute("DELETE FROM media WHERE id=?", (row["id"],))
         self.conn.commit()
+
+    def clear_media_acoustic(self, info: MediaInfo) -> None:
+        """Remove only the acoustic fingerprints for a media entry (keeps
+        phonetic fingerprints and the media row intact)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT id FROM media WHERE title=? AND IFNULL(year,-1)=IFNULL(?,-1)
+               AND media_type=? AND IFNULL(season,-1)=IFNULL(?,-1)
+               AND IFNULL(episode,-1)=IFNULL(?,-1) AND source=?""",
+            (info.title, info.year, info.media_type, info.season, info.episode, info.source),
+        )
+        for row in cur.fetchall():
+            cur.execute("DELETE FROM acoustic_index WHERE media_id=?", (row["id"],))
+            cur.execute("DELETE FROM acoustic_segments WHERE media_id=?", (row["id"],))
+        self.conn.commit()
+
+    # ------------------------------------------------------------------
+    # Acoustic (Chromaprint) storage & lookup
+    # ------------------------------------------------------------------
+
+    def add_acoustic_segment(self, media_id: int, segment_index: int,
+                             start_ms: int, end_ms: int,
+                             raw_ints: List[int], index_stride: int = 1) -> int:
+        """Store one segment's Chromaprint fingerprint plus its inverted-index
+        rows. Returns the new segment_id.
+
+        `raw_ints` is the list of uint32 Chromaprint frames for the segment.
+        `index_stride` lets you index every Nth frame to shrink the index.
+        """
+        import struct
+        blob = struct.pack(f"<{len(raw_ints)}I",
+                           *[(x & 0xFFFFFFFF) for x in raw_ints])
+        cur = self.conn.cursor()
+        cur.execute(
+            """INSERT INTO acoustic_segments
+               (media_id, segment_index, start_ms, end_ms, num_frames, fingerprint)
+               VALUES (?,?,?,?,?,?)""",
+            (media_id, segment_index, start_ms, end_ms, len(raw_ints),
+             sqlite3.Binary(blob)),
+        )
+        segment_id = cur.lastrowid
+        idx_rows = [
+            ((raw_ints[pos] & 0xFFFFFFFF), segment_id, media_id, pos)
+            for pos in range(0, len(raw_ints), max(1, index_stride))
+        ]
+        if idx_rows:
+            cur.executemany(
+                "INSERT INTO acoustic_index (subfp, segment_id, media_id, position) "
+                "VALUES (?,?,?,?)",
+                idx_rows,
+            )
+        self.conn.commit()
+        return segment_id
+
+    def lookup_acoustic_index(self, subfps: Iterable[int]) -> List[sqlite3.Row]:
+        """Return inverted-index rows (subfp, segment_id, media_id, position)
+        matching the given sub-fingerprint integers."""
+        subfps = list({(x & 0xFFFFFFFF) for x in subfps})
+        if not subfps:
+            return []
+        results: List[sqlite3.Row] = []
+        cur = self.conn.cursor()
+        CHUNK = 400
+        for i in range(0, len(subfps), CHUNK):
+            chunk = subfps[i:i + CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            cur.execute(
+                f"""SELECT subfp, segment_id, media_id, position
+                    FROM acoustic_index WHERE subfp IN ({placeholders})""",
+                chunk,
+            )
+            results.extend(cur.fetchall())
+        return results
+
+    def get_acoustic_segment(self, segment_id: int) -> Optional[dict]:
+        """Return a segment's metadata + decoded raw fingerprint list."""
+        import struct
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT s.*, m.title, m.year, m.media_type, m.season, m.episode
+               FROM acoustic_segments s JOIN media m ON s.media_id = m.id
+               WHERE s.id=?""",
+            (segment_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        blob = row["fingerprint"]
+        n = row["num_frames"] or (len(blob) // 4)
+        raw = list(struct.unpack(f"<{n}I", blob)) if blob else []
+        return {
+            "id": row["id"], "media_id": row["media_id"],
+            "segment_index": row["segment_index"],
+            "start_ms": row["start_ms"], "end_ms": row["end_ms"],
+            "num_frames": n, "raw": raw,
+            "title": row["title"], "year": row["year"],
+            "media_type": row["media_type"], "season": row["season"],
+            "episode": row["episode"],
+        }
+
+    def all_acoustic_segment_ids(self) -> List[int]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT id FROM acoustic_segments")
+        return [r["id"] for r in cur.fetchall()]
 
     def lookup(self, hashes: Iterable[str]) -> List[sqlite3.Row]:
         """Return all fingerprint rows (joined with media) matching given hashes."""
@@ -347,7 +490,12 @@ class FingerprintDB:
         media_count = cur.fetchone()["c"]
         cur.execute("SELECT COUNT(*) AS c FROM fingerprints")
         fp_count = cur.fetchone()["c"]
-        return {"media": media_count, "fingerprints": fp_count}
+        cur.execute("SELECT COUNT(*) AS c FROM acoustic_segments")
+        ac_seg = cur.fetchone()["c"]
+        cur.execute("SELECT COUNT(*) AS c FROM acoustic_index")
+        ac_idx = cur.fetchone()["c"]
+        return {"media": media_count, "fingerprints": fp_count,
+                "acoustic_segments": ac_seg, "acoustic_subfps": ac_idx}
 
     def list_media(self) -> List[sqlite3.Row]:
         cur = self.conn.cursor()

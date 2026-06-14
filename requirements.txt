@@ -16,5 +16,11 @@ SpeechRecognition>=3.10  # optional online Google Web Speech engine
 # Audio handling (requires system ffmpeg)
 pydub>=0.25.1
 
+# Acoustic (Chromaprint/AcoustID) fingerprinting - sound-based identification
+# Requires the system 'fpcalc' tool from chromaprint:
+#   Debian/Ubuntu:  sudo apt-get install libchromaprint-tools
+#   macOS (brew):   brew install chromaprint
+pyacoustid>=1.2.0
+
 # Live microphone capture (only needed for identify_audio.py live mode)
 # pyaudio>=0.2.13        # install separately; needs system portaudio19-dev
