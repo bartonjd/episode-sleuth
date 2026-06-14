@@ -77,6 +77,13 @@ class AcousticConfig:
     confidence_threshold: float = 0.30
     index_stride: int = 1           # index every Nth frame
     query_chunk_seconds: int = 15   # query window size when identifying
+    # When the exact-match inverted index finds no candidate segments (which is
+    # what happens for any lossy / re-encoded / re-recorded audio, where the
+    # 32-bit sub-fingerprints rarely match a reference frame *exactly*), fall
+    # back to a bit-tolerant brute-force scan over every stored segment. This is
+    # only enabled when the reference DB is small enough to scan quickly.
+    brute_force_fallback: bool = True
+    brute_force_max_segments: int = 8000
 
     @classmethod
     def from_config(cls, cfg: dict) -> "AcousticConfig":
@@ -91,6 +98,8 @@ class AcousticConfig:
             confidence_threshold=ac.get("confidence_threshold", 0.30),
             index_stride=ac.get("index_stride", 1),
             query_chunk_seconds=ac.get("query_chunk_seconds", 15),
+            brute_force_fallback=ac.get("brute_force_fallback", True),
+            brute_force_max_segments=ac.get("brute_force_max_segments", 8000),
         )
 
 
@@ -381,12 +390,94 @@ def _best_alignment(query: List[int], ref: List[int], center_offset: int,
     return best
 
 
+def _full_scan_alignment(query: List[int], ref: List[int],
+                         ac_cfg: AcousticConfig) -> Tuple[int, int, int]:
+    """Slide `query` across the whole of `ref` and return the best alignment.
+
+    Unlike :func:`_best_alignment` (which only searches a small window around a
+    voted offset), this scans *every* offset with enough overlap. It is the
+    workhorse of the brute-force fallback used when the exact-match inverted
+    index produced no candidates.
+
+    Returns (matched_frames, overlap_frames, best_offset).
+    """
+    qlen = len(query)
+    rlen = len(ref)
+    if qlen == 0 or rlen == 0:
+        return (0, 0, 0)
+    min_ov = ac_cfg.min_overlap_frames
+    max_bit = ac_cfg.max_bit_error
+    best = (0, 0, 0)
+    # Offsets such that at least `min_ov` query frames overlap the reference.
+    lo = -(qlen - min_ov)
+    hi = rlen - min_ov
+    for off in range(lo, hi + 1):
+        i0 = max(0, -off)
+        i1 = min(qlen, rlen - off)
+        overlap = i1 - i0
+        if overlap < min_ov:
+            continue
+        matched = 0
+        for i in range(i0, i1):
+            if _popcount(query[i] ^ ref[i + off]) <= max_bit:
+                matched += 1
+        if matched > best[0]:
+            best = (matched, overlap, off)
+    return best
+
+
+def _brute_force_match(query_raw: List[int], db: FingerprintDB,
+                       ac_cfg: AcousticConfig, top_n: int) -> List[AcousticMatchResult]:
+    """Bit-tolerant scan over every stored segment.
+
+    Used as a fallback when the exact-match inverted index yields no candidate
+    segments. This is necessary for any audio that is not a bit-identical copy
+    of the reference (lossy re-encodes, re-recordings, microphone captures),
+    because Chromaprint sub-fingerprints of such audio almost never match a
+    reference frame *exactly* and therefore never appear in the inverted index.
+    """
+    seg_ids = db.all_acoustic_segment_ids()
+    if not seg_ids or len(seg_ids) > ac_cfg.brute_force_max_segments:
+        if seg_ids:
+            logging.debug(
+                "acoustic brute-force skipped: %d segments exceeds limit %d",
+                len(seg_ids), ac_cfg.brute_force_max_segments)
+        return []
+
+    logging.debug("acoustic: no exact index hits; brute-force scanning %d segments",
+                  len(seg_ids))
+    per_media: Dict[int, AcousticMatchResult] = {}
+    qlen = len(query_raw)
+    for seg_id in seg_ids:
+        seg = db.get_acoustic_segment(seg_id)
+        if not seg or not seg["raw"]:
+            continue
+        matched, overlap, _off = _full_scan_alignment(query_raw, seg["raw"], ac_cfg)
+        if overlap < ac_cfg.min_overlap_frames or matched == 0:
+            continue
+        confidence = matched / max(1, qlen)
+        info = MediaInfo(title=seg["title"], year=seg["year"],
+                         media_type=seg["media_type"], season=seg["season"],
+                         episode=seg["episode"])
+        prev = per_media.get(seg["media_id"])
+        if prev is None or confidence > prev.confidence:
+            per_media[seg["media_id"]] = AcousticMatchResult(
+                media=info, media_id=seg["media_id"], confidence=confidence,
+                matched_frames=matched, query_frames=qlen,
+                segment_index=seg["segment_index"], ref_start_ms=seg["start_ms"],
+            )
+    return sorted(per_media.values(),
+                  key=lambda r: r.confidence, reverse=True)[:top_n]
+
+
 def match_acoustic(query_raw: List[int], db: FingerprintDB,
                    ac_cfg: AcousticConfig, top_n: int = 5) -> List[AcousticMatchResult]:
     """Match a query Chromaprint fingerprint against the acoustic DB.
 
     Strategy: inverted-index offset voting to find candidate segments, then a
-    precise bit-error re-alignment to score each candidate.
+    precise bit-error re-alignment to score each candidate. If the (exact-match)
+    index yields no candidates, fall back to a bit-tolerant brute-force scan so
+    that lossy / re-recorded audio can still be matched.
     """
     if not query_raw:
         return []
@@ -410,6 +501,11 @@ def match_acoustic(query_raw: List[int], db: FingerprintDB,
                 seg_votes.setdefault(seg_id, {}).get(offset, 0) + 1
 
     if not seg_votes:
+        # No segment shared an exact sub-fingerprint with the query. This is the
+        # normal case for lossy / re-recorded audio. Fall back to a bit-tolerant
+        # brute-force scan (when the DB is small enough) instead of giving up.
+        if ac_cfg.brute_force_fallback:
+            return _brute_force_match(query_raw, db, ac_cfg, top_n)
         return []
 
     # For each candidate segment, take the best-voted offset, then re-align
