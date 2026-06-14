@@ -170,16 +170,170 @@ def print_live_result(results, threshold, method="phonetic"):
     print("=" * 60 + "\n")
 
 
+# ---------------------------------------------------------------------------
+# File-based identification helpers
+# ---------------------------------------------------------------------------
+# Transcription lives here (identification of UNKNOWN audio) — never in the
+# reference-building scripts, which use subtitles (phonetic) and Chromaprint
+# (acoustic) directly.
+
+def _chunk_segment(seg, chunk_seconds, overlap_seconds):
+    """Yield (start_ms, end_ms, AudioSegment) windows with overlap."""
+    total = len(seg)
+    step = max(1, (chunk_seconds - overlap_seconds)) * 1000
+    win = chunk_seconds * 1000
+    pos = 0
+    while pos < total:
+        end = min(pos + win, total)
+        yield pos, end, seg[pos:end]
+        if end >= total:
+            break
+        pos += step
+
+
+def transcribe_file(path, transcriber, cfg):
+    """Transcribe an audio file in overlapping chunks -> list of (start,end,text)."""
+    audio_cfg = cfg.get("audio", {})
+    sr = audio_cfg.get("sample_rate", 16000)
+    seg = stt_utils.load_audio_mono16k(path, sr)
+    chunk_s = audio_cfg.get("chunk_seconds", 8)
+    overlap_s = audio_cfg.get("overlap_seconds", 2)
+
+    results = []
+    chunks = list(_chunk_segment(seg, chunk_s, overlap_s))
+    for i, (start_ms, end_ms, sub) in enumerate(chunks, 1):
+        text = transcriber.transcribe_segment(sub)
+        if text:
+            results.append((start_ms, end_ms, text))
+        logging.info("  transcribed chunk %d/%d (%.0fs) %s",
+                     i, len(chunks), start_ms / 1000.0,
+                     ("-> " + text[:50]) if text else "(silence)")
+    return results
+
+
+def identify_audio_file(path, db, fp_cfg, transcriber, cfg):
+    """Phonetic identification of a recorded file: transcribe -> match."""
+    logging.info("Transcribing %s for identification ...", os.path.basename(path))
+    cues = transcribe_file(path, transcriber, cfg)
+    text = " ".join(t for (_a, _b, t) in cues)
+    if not text.strip():
+        print("No speech recognised; cannot identify.")
+        return []
+    query_hashes = [h for (h, _s) in fingerprint_text(text, fp_cfg)]
+    rows = db.lookup(query_hashes)
+    results = score_matches(query_hashes, rows, cfg.get("matching", {}))
+    print_results(results, cfg)
+    return results
+
+
+def print_results(results, cfg):
+    threshold = cfg.get("matching", {}).get("confidence_threshold", 0.15)
+    print("\n" + "=" * 60)
+    if not results or results[0].confidence < threshold:
+        print("No confident match found.")
+        if results:
+            best = results[0]
+            print(f"(best guess: {best.media.label()} "
+                  f"@ {best.confidence:.1%} - below threshold {threshold:.0%})")
+        return
+    print("MATCH RESULTS")
+    print("-" * 60)
+    for i, r in enumerate(results, 1):
+        flag = ">>" if (i == 1 and r.confidence >= threshold) else "  "
+        print(f"{flag} {i}. {r.media.label():40} {r.confidence:6.1%}  "
+              f"({r.match_count} hits)")
+    print("=" * 60)
+
+
+def identify_combined(path, db, fp_cfg, ac_cfg, transcriber, cfg,
+                      use_phonetic, use_acoustic):
+    """Run phonetic and/or acoustic identification and report the best method."""
+    import acoustic_fingerprint as af
+
+    phon_best = None
+    ac_best = None
+
+    if use_phonetic and transcriber is not None:
+        logging.info("Transcribing %s for phonetic identification ...",
+                     os.path.basename(path))
+        cues = transcribe_file(path, transcriber, cfg)
+        text = " ".join(t for (_a, _b, t) in cues)
+        if text.strip():
+            query_hashes = [h for (h, _s) in fingerprint_text(text, fp_cfg)]
+            rows = db.lookup(query_hashes)
+            phon_results = score_matches(query_hashes, rows, cfg.get("matching", {}))
+            if phon_results:
+                phon_best = phon_results[0]
+        else:
+            logging.info("No speech recognised for phonetic matching.")
+
+    if use_acoustic:
+        logging.info("Acoustic fingerprinting %s ...", os.path.basename(path))
+        ac_results = af.identify_file_acoustic(path, db, ac_cfg)
+        if ac_results:
+            ac_best = ac_results[0]
+
+    print_combined_result(phon_best, ac_best, cfg, ac_cfg)
+    return phon_best, ac_best
+
+
+def print_combined_result(phon_best, ac_best, cfg, ac_cfg):
+    phon_thr = cfg.get("matching", {}).get("confidence_threshold", 0.15)
+    ac_thr = ac_cfg.confidence_threshold
+    print("\n" + "=" * 60)
+    print("HYBRID IDENTIFICATION (phonetic + acoustic)")
+    print("-" * 60)
+    if phon_best:
+        ok = "OK " if phon_best.confidence >= phon_thr else "low"
+        print(f"  phonetic : {phon_best.media.label():38} "
+              f"{phon_best.confidence:6.1%} [{ok}]")
+    else:
+        print("  phonetic : (no match)")
+    if ac_best:
+        ok = "OK " if ac_best.confidence >= ac_thr else "low"
+        loc = (f" @{(ac_best.ref_start_ms or 0)/1000:.0f}s"
+               if ac_best.ref_start_ms is not None else "")
+        print(f"  acoustic : {ac_best.media.label():38} "
+              f"{ac_best.confidence:6.1%} [{ok}]{loc}")
+    else:
+        print("  acoustic : (no match)")
+
+    # Choose the winner: prefer a method that clears its own threshold; if both
+    # do (or neither), prefer the higher confidence.
+    candidates = []
+    if phon_best:
+        candidates.append(("phonetic", phon_best, phon_best.confidence,
+                           phon_best.confidence >= phon_thr))
+    if ac_best:
+        candidates.append(("acoustic", ac_best, ac_best.confidence,
+                           ac_best.confidence >= ac_thr))
+    print("-" * 60)
+    if not candidates:
+        print(">>> No match found by either method.")
+        print("=" * 60)
+        return None
+    passing = [c for c in candidates if c[3]]
+    pool = passing if passing else candidates
+    method, best, conf, _ok = max(pool, key=lambda c: c[2])
+    if passing:
+        print(f">>> IDENTIFIED via {method.upper()}: {best.media.label()} "
+              f"({conf:.1%})")
+    else:
+        print(f">>> Best guess via {method.upper()}: {best.media.label()} "
+              f"({conf:.1%}) - below threshold")
+    print("=" * 60)
+    return method, best
+
+
 def run_file_fallback(path, db, fp_cfg, transcriber, cfg,
                       use_phonetic=True, use_acoustic=False, ac_cfg=None):
     """Identify from a recorded file (useful when no mic is available)."""
-    import fingerprint_audio
     if use_acoustic:
-        fingerprint_audio.identify_combined(
+        identify_combined(
             path, db, fp_cfg, ac_cfg, transcriber, cfg,
             use_phonetic, use_acoustic)
     else:
-        fingerprint_audio.identify_audio_file(path, db, fp_cfg, transcriber, cfg)
+        identify_audio_file(path, db, fp_cfg, transcriber, cfg)
 
 
 def main(argv=None):

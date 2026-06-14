@@ -1,3 +1,7 @@
+# =====================================================================
+# Building the reference database (create_fingerprint.py /
+# create_acoustic_fingerprint.py / fingerprint_audio.py)
+# =====================================================================
 # Core phonetic fingerprinting
 metaphone>=0.6
 python-Levenshtein>=0.21
@@ -9,11 +13,18 @@ webvtt-py>=0.4.6
 # OpenSubtitles download
 requests>=2.28
 
-# Speech-to-text
+# =====================================================================
+# Identification ONLY (identify_audio.py)
+# =====================================================================
+# Speech-to-text is used exclusively to transcribe UNKNOWN audio at
+# identification time. The reference database is built from subtitles
+# (phonetic) and Chromaprint (acoustic), so NONE of the database-building
+# scripts need these. Skip them if you only build/index reference media.
 vosk>=0.3.45              # offline STT (recommended) - requires a model download
 SpeechRecognition>=3.10  # optional online Google Web Speech engine
 
-# Audio handling (requires system ffmpeg)
+# Audio handling for STT loading/transcription (requires system ffmpeg).
+# Also used to slice audio for identification.
 pydub>=0.25.1
 
 # Acoustic (Chromaprint/AcoustID) fingerprinting - sound-based identification
