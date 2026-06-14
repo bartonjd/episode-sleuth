@@ -158,13 +158,18 @@ def _parse_query(query: str) -> Tuple[str, Optional[int]]:
 
 
 def download_opensubtitles(query: str, out_dir: str, cfg: dict,
-                           limit: int = 5, languages: str = "en") -> List[str]:
+                           limit: int = 5, languages: str = "en",
+                           media_type: Optional[str] = None) -> List[str]:
     """Search OpenSubtitles and download up to `limit` subtitle files.
 
     Two providers are supported (selected by config opensubtitles.provider):
       * "api"    -> official https://api.opensubtitles.com/api/v1 (needs api_key)
       * "legacy" -> public rest.opensubtitles.org/search (no key; often blocked)
       * "auto"   -> use the official API if an api_key is configured, else legacy
+
+    `media_type` is an optional hint ("tv" / "movie"). For the official API this
+    maps to type=episode / type=movie. When omitted, the API search tries
+    episodes first and falls back to movies.
 
     Returns the list of extracted local subtitle file paths.
     """
@@ -181,13 +186,38 @@ def download_opensubtitles(query: str, out_dir: str, cfg: dict,
             logging.error("opensubtitles.provider='api' but no api_key configured. "
                           "Get a free key at https://www.opensubtitles.com/consumers")
             return []
-        return _download_via_api(query, out_dir, cfg, limit, languages)
+        return _download_via_api(query, out_dir, cfg, limit, languages, media_type)
     return _download_via_legacy(query, out_dir, cfg, limit,
                                 "eng" if languages in ("en", "eng") else languages)
 
 
+def _media_type_to_search_type(media_type: Optional[str]) -> Optional[str]:
+    if not media_type:
+        return None
+    return "movie" if media_type == "movie" else "episode"
+
+
+def _api_search(api_url: str, headers: dict, title: str, year: Optional[int],
+                lang: str, search_type: Optional[str], page: int = 1) -> list:
+    """Perform a single OpenSubtitles API /subtitles search request.
+
+    The query is lower-cased because the API issues a 301 redirect (which can
+    drop query parameters on some clients) for non-lower-case queries.
+    """
+    params = {"query": title.lower(), "languages": lang, "page": page}
+    if year:
+        params["year"] = year
+    if search_type:
+        params["type"] = search_type
+    resp = requests.get(f"{api_url}/subtitles", headers=headers,
+                        params=params, timeout=30)
+    resp.raise_for_status()
+    return resp.json().get("data", [])
+
+
 def _download_via_api(query: str, out_dir: str, cfg: dict,
-                      limit: int, languages: str) -> List[str]:
+                      limit: int, languages: str,
+                      media_type: Optional[str] = None) -> List[str]:
     """Official opensubtitles.com REST API (requires a free API key)."""
     os_cfg = cfg.get("opensubtitles", {})
     api_url = os_cfg.get("api_url", "https://api.opensubtitles.com/api/v1").rstrip("/")
@@ -196,6 +226,7 @@ def _download_via_api(query: str, out_dir: str, cfg: dict,
     lang = "en" if languages in ("en", "eng") else languages
 
     title, year = _parse_query(query)
+    # The API requires a real, identifying User-Agent (app name + version).
     headers = {"Api-Key": api_key, "User-Agent": user_agent,
                "Content-Type": "application/json", "Accept": "application/json"}
 
@@ -208,25 +239,35 @@ def _download_via_api(query: str, out_dir: str, cfg: dict,
                               json={"username": user, "password": pwd}, timeout=30)
             if r.ok:
                 token = r.json().get("token")
+                logging.info("Logged in to OpenSubtitles as '%s'", user)
         except Exception as exc:
             logging.warning("OpenSubtitles login failed (continuing anonymously): %s", exc)
 
-    params = {"query": title, "languages": lang}
-    if year:
-        params["year"] = year
-    logging.info("Searching OpenSubtitles API for '%s' (lang=%s)", title, lang)
-    try:
-        resp = requests.get(f"{api_url}/subtitles", headers=headers,
-                            params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-    except Exception as exc:
-        logging.error("OpenSubtitles API search failed: %s", exc)
-        return []
+    # Decide which content type(s) to search. Explicit hint wins; otherwise try
+    # episodes first (TV) then fall back to movies.
+    hinted = _media_type_to_search_type(media_type)
+    search_types = [hinted] if hinted else ["episode", "movie"]
+
+    data = []
+    used_type = None
+    for st in search_types:
+        logging.info("Searching OpenSubtitles API: query='%s' type=%s year=%s lang=%s",
+                     title.lower(), st, year or "-", lang)
+        try:
+            data = _api_search(api_url, headers, title, year, lang, st)
+        except Exception as exc:
+            logging.error("OpenSubtitles API search failed: %s", exc)
+            data = []
+        if data:
+            used_type = st
+            break
 
     if not data:
-        logging.warning("No subtitles found for '%s'", query)
+        logging.warning("No subtitles found for '%s' (type tried: %s)",
+                        query, ", ".join(str(s) for s in search_types))
         return []
+
+    logging.info("Found %d subtitle result(s) (type=%s)", len(data), used_type)
 
     dl_headers = dict(headers)
     if token:
@@ -236,26 +277,62 @@ def _download_via_api(query: str, out_dir: str, cfg: dict,
     for item in data:
         if len(downloaded) >= limit:
             break
-        files = item.get("attributes", {}).get("files", [])
+        attrs = item.get("attributes", {})
+        files = attrs.get("files", [])
         if not files:
             continue
         file_id = files[0].get("file_id")
         if not file_id:
             continue
+
+        base_name = _build_subtitle_basename(attrs, files[0])
         try:
             r = requests.post(f"{api_url}/download", headers=dl_headers,
                               json={"file_id": file_id}, timeout=30)
             r.raise_for_status()
             link = r.json().get("link")
             if not link:
+                logging.warning("No download link returned for file_id %s "
+                                "(quota exhausted?)", file_id)
                 continue
-            paths = _download_and_extract(link, out_dir, {"User-Agent": user_agent})
+            paths = _download_and_extract(link, out_dir, {"User-Agent": user_agent},
+                                          base_name=base_name)
             downloaded.extend(paths)
             time.sleep(1)
         except Exception as exc:
             logging.warning("Failed to download file_id %s: %s", file_id, exc)
     logging.info("Downloaded %d subtitle file(s) to %s", len(downloaded), out_dir)
     return downloaded
+
+
+def _build_subtitle_basename(attrs: dict, file_entry: dict) -> str:
+    """Build a clean, metadata-rich filename so downstream filename parsing
+    recovers the correct show/season/episode/year.
+
+    Uses the API's feature_details when available, otherwise the original
+    uploaded file name.
+    """
+    fd = attrs.get("feature_details", {}) or {}
+    parent = fd.get("parent_title") or fd.get("title") or "subtitle"
+    year = fd.get("year")
+    season = fd.get("season_number")
+    episode = fd.get("episode_number")
+
+    if season is not None and episode is not None:
+        yr = f" ({year})" if year else ""
+        name = f"{parent}{yr} S{int(season):02d}E{int(episode):02d}"
+    else:
+        # movie or missing S/E info -> use original file name if present
+        orig = (file_entry.get("file_name") or fd.get("movie_name")
+                or parent)
+        name = orig
+        if year and str(year) not in name:
+            name = f"{name} ({year})"
+
+    # sanitise for the filesystem
+    name = re.sub(r"[^\w().\- ]+", " ", name).strip()
+    name = re.sub(r"\s+", " ", name)
+    return name or "subtitle"
 
 
 def _download_via_legacy(query: str, out_dir: str, cfg: dict,
@@ -308,17 +385,34 @@ def _download_via_legacy(query: str, out_dir: str, cfg: dict,
     return downloaded
 
 
-def _download_and_extract(url: str, out_dir: str, headers: dict) -> List[str]:
+def _unique_path(out_dir: str, base_name: str, ext: str) -> str:
+    """Return a non-colliding path out_dir/base_name(ext), adding a suffix if needed."""
+    base_name = base_name or "subtitle"
+    candidate = os.path.join(out_dir, f"{base_name}{ext}")
+    i = 2
+    while os.path.exists(candidate):
+        candidate = os.path.join(out_dir, f"{base_name} ({i}){ext}")
+        i += 1
+    return candidate
+
+
+def _download_and_extract(url: str, out_dir: str, headers: dict,
+                          base_name: Optional[str] = None) -> List[str]:
     resp = requests.get(url, headers=headers, timeout=60)
     resp.raise_for_status()
     content = resp.content
     out: List[str] = []
 
-    # gzip (.gz) — most SubDownloadLink results
-    if url.endswith(".gz") or content[:2] == b"\x1f\x8b":
+    # pick extension based on the link (official API links usually end in .srt)
+    lower_url = url.lower()
+    ext = ".vtt" if ".vtt" in lower_url else ".srt"
+    fallback_base = base_name or f"sub_{abs(hash(url)) % 10**8}"
+
+    # gzip (.gz) — most legacy SubDownloadLink results
+    if lower_url.endswith(".gz") or content[:2] == b"\x1f\x8b":
         try:
             data = gzip.decompress(content)
-            fname = os.path.join(out_dir, f"sub_{abs(hash(url)) % 10**8}.srt")
+            fname = _unique_path(out_dir, fallback_base, ext)
             with open(fname, "wb") as fh:
                 fh.write(data)
             out.append(fname)
@@ -332,17 +426,20 @@ def _download_and_extract(url: str, out_dir: str, headers: dict) -> List[str]:
             tmp.write(content)
             tmp_path = tmp.name
         with zipfile.ZipFile(tmp_path) as zf:
-            for name in zf.namelist():
-                if name.lower().endswith((".srt", ".vtt")):
-                    target = os.path.join(out_dir, os.path.basename(name))
-                    with zf.open(name) as src, open(target, "wb") as dst:
-                        dst.write(src.read())
-                    out.append(target)
+            sub_names = [n for n in zf.namelist()
+                         if n.lower().endswith((".srt", ".vtt"))]
+            for idx, name in enumerate(sub_names):
+                sub_ext = ".vtt" if name.lower().endswith(".vtt") else ".srt"
+                bn = fallback_base if len(sub_names) == 1 else f"{fallback_base} {idx + 1}"
+                target = _unique_path(out_dir, bn, sub_ext)
+                with zf.open(name) as src, open(target, "wb") as dst:
+                    dst.write(src.read())
+                out.append(target)
         os.unlink(tmp_path)
         return out
 
-    # raw subtitle
-    fname = os.path.join(out_dir, f"sub_{abs(hash(url)) % 10**8}.srt")
+    # raw subtitle (official API download link)
+    fname = _unique_path(out_dir, fallback_base, ext)
     with open(fname, "wb") as fh:
         fh.write(content)
     out.append(fname)

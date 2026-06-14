@@ -85,20 +85,26 @@ def run_directory(directory, db, fp_cfg, title, year, media_type):
     return grand
 
 
-def run_show(query, db, fp_cfg, cfg, limit, media_type):
+def run_show(query, db, fp_cfg, cfg, limit, media_type, year_override=None):
+    # The year may come either inside the --show string ("Matlock 1986") or
+    # via the separate --year flag. Combine both so the API year filter works.
+    title, year = su._parse_query(query)
+    if year_override:
+        year = year_override
+    effective_query = f"{title} {year}".strip() if year else title
+
     out_dir = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         cfg.get("opensubtitles", {}).get("download_dir", "downloads"),
-        query.replace(" ", "_"),
+        effective_query.replace(" ", "_"),
     )
-    logging.info("Downloading subtitles for '%s' ...", query)
-    files = su.download_opensubtitles(query, out_dir, cfg, limit=limit)
+    logging.info("Downloading subtitles for '%s' ...", effective_query)
+    files = su.download_opensubtitles(effective_query, out_dir, cfg, limit=limit,
+                                      media_type=media_type)
     if not files:
         logging.error("No subtitles downloaded for '%s'. "
-                      "Try --dir with local files instead.", query)
+                      "Try --dir with local files instead.", effective_query)
         return 0
-    # parse query for default title/year
-    title, year = su._parse_query(query)
     grand = 0
     for i, f in enumerate(files, 1):
         logging.info("[%d/%d] Processing %s", i, len(files), os.path.basename(f))
@@ -145,7 +151,8 @@ def main(argv=None):
             return 0
 
         if args.show:
-            total = run_show(args.show, db, fp_cfg, cfg, args.limit, args.type)
+            total = run_show(args.show, db, fp_cfg, cfg, args.limit, args.type,
+                             year_override=args.year)
         elif args.dir:
             total = run_directory(args.dir, db, fp_cfg, args.title, args.year, args.type)
         else:
