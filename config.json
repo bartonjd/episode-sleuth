@@ -16,7 +16,15 @@
     "min_matches": 3,
     "fuzzy_edit_distance": 1,
     "enable_fuzzy": true,
-    "top_n_results": 5
+    "top_n_results": 5,
+    "_fuzzy_comment": "Order-preserving phonetic LCS matcher. Used as a FALLBACK only when exact shingle-hash confidence is below threshold (STT word errors break exact shingles). min_lcs_ratio = min (LCS length / query tokens) to accept a match; min_query_tokens guards against trusting very short queries; weight scales the fuzzy confidence; min_margin requires the top candidate to beat the runner-up by this gap (LCS is biased toward longer/common-word references, so ambiguous near-ties are rejected and the safer exact/acoustic verdict is kept).",
+    "fuzzy": {
+      "enabled": true,
+      "min_lcs_ratio": 0.45,
+      "min_query_tokens": 8,
+      "weight": 1.0,
+      "min_margin": 0.12
+    }
   },
   "audio": {
     "sample_rate": 16000,

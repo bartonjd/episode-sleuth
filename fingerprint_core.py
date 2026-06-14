@@ -201,6 +201,19 @@ def fingerprint_text(text: str, cfg: FingerprintConfig) -> List[Tuple[str, int]]
     return results
 
 
+def phonetic_token_stream(text: str, cfg: FingerprintConfig) -> List[str]:
+    """Return the in-order list of phonetic tokens for a text block.
+
+    This is the *unhashed* counterpart of :func:`fingerprint_text`: it uses the
+    exact same tokenization + Double-Metaphone encoding, so a query stream and a
+    reference stream are directly comparable token-for-token. Used by the fuzzy
+    (order-preserving) matcher, which needs the raw token sequence rather than
+    opaque shingle hashes.
+    """
+    tokens = tokenize(text, cfg.min_word_length, cfg.drop_stopwords)
+    return phonetic_tokens(tokens, cfg.metaphone_primary_only)
+
+
 # ---------------------------------------------------------------------------
 # Fingerprint database (SQLite)
 # ---------------------------------------------------------------------------
@@ -265,6 +278,27 @@ class FingerprintDB:
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fp_hash ON fingerprints(hash)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fp_media ON fingerprints(media_id)")
+
+        # --- Phonetic TOKEN STREAM (for fuzzy / order-preserving matching) ----
+        # The `fingerprints` table stores only opaque shingle *hashes*, which
+        # only ever match exactly. A single STT word error breaks every shingle
+        # that contains that word, so exact-hash recall degrades fast on real
+        # microphone audio. To recover, we also persist the raw ordered stream
+        # of phonetic tokens per media (one row per media, tokens packed as a
+        # space-joined string plus a parallel JSON list of start_ms). The fuzzy
+        # matcher loads this stream for a small candidate shortlist and scores
+        # the longest order-preserving common subsequence against the query,
+        # which tolerates missing / mis-heard / inserted words.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_tokens (
+                media_id INTEGER PRIMARY KEY,
+                tokens TEXT NOT NULL,
+                starts TEXT NOT NULL,
+                FOREIGN KEY(media_id) REFERENCES media(id)
+            )
+            """
+        )
 
         # --- Acoustic (Chromaprint) fingerprint tables -----------------------
         # One row per audio SEGMENT (e.g. 30 s). The raw Chromaprint fingerprint
@@ -336,6 +370,70 @@ class FingerprintDB:
         self.conn.commit()
         return len(data)
 
+    def add_token_stream(self, media_id: int, tokens: List[str],
+                         starts: List[Optional[int]]) -> int:
+        """Persist the ordered phonetic token stream for a media row.
+
+        ``tokens`` is the full in-order list of Double-Metaphone codes for the
+        whole subtitle / transcript, and ``starts`` the parallel list of cue
+        start times (ms) so a fuzzy match can report a time window. Stored as a
+        single row (tokens space-joined, starts JSON-encoded) so the fuzzy
+        matcher can load an entire candidate's stream in one cheap read.
+        """
+        if not tokens:
+            return 0
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM media_tokens WHERE media_id=?", (media_id,))
+        cur.execute(
+            "INSERT INTO media_tokens (media_id, tokens, starts) VALUES (?,?,?)",
+            (media_id, " ".join(tokens), json.dumps(starts)),
+        )
+        self.conn.commit()
+        return len(tokens)
+
+    def get_token_stream(self, media_id: int
+                         ) -> Tuple[List[str], List[Optional[int]]]:
+        """Return (tokens, starts) for a media row, or ([], []) if absent."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT tokens, starts FROM media_tokens WHERE media_id=?", (media_id,))
+        row = cur.fetchone()
+        if not row or not row["tokens"]:
+            return [], []
+        tokens = row["tokens"].split(" ")
+        try:
+            starts = json.loads(row["starts"])
+        except (ValueError, TypeError):
+            starts = [None] * len(tokens)
+        return tokens, starts
+
+    def has_token_stream(self, media_id: int) -> bool:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM media_tokens WHERE media_id=? LIMIT 1", (media_id,))
+        return cur.fetchone() is not None
+
+    def all_token_stream_media_ids(self) -> List[int]:
+        """All media ids that have a stored phonetic token stream (used by the
+        fuzzy matcher's full-database fallback when no acoustic shortlist)."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT media_id FROM media_tokens")
+        return [r["media_id"] for r in cur.fetchall()]
+
+    def media_info(self, media_id: int) -> Optional["MediaInfo"]:
+        """Return a MediaInfo for a media id, or None if it does not exist."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT title, year, media_type, season, episode, source "
+            "FROM media WHERE id=?", (media_id,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        return MediaInfo(
+            title=r["title"], year=r["year"], media_type=r["media_type"],
+            season=r["season"], episode=r["episode"], source=r["source"] or "",
+        )
+
     def clear_media(self, info: MediaInfo) -> None:
         """Remove an existing media entry and its fingerprints (re-index)."""
         cur = self.conn.cursor()
@@ -347,6 +445,7 @@ class FingerprintDB:
         )
         for row in cur.fetchall():
             cur.execute("DELETE FROM fingerprints WHERE media_id=?", (row["id"],))
+            cur.execute("DELETE FROM media_tokens WHERE media_id=?", (row["id"],))
             cur.execute("DELETE FROM acoustic_index WHERE media_id=?", (row["id"],))
             cur.execute("DELETE FROM acoustic_segments WHERE media_id=?", (row["id"],))
             cur.execute("DELETE FROM media WHERE id=?", (row["id"],))
@@ -700,6 +799,164 @@ def score_matches(query_hashes: List[str],
         results.append(MatchResult(
             media=bucket["info"], media_id=mid, confidence=confidence,
             match_count=match_count, query_count=len(query_set),
+            window_start_ms=win_start, window_end_ms=win_end,
+        ))
+
+    results.sort(key=lambda r: (r.confidence, r.match_count), reverse=True)
+    return results[:top_n]
+
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy (order-preserving) phonetic matching
+# ---------------------------------------------------------------------------
+#
+# Why a second matcher?
+# ---------------------
+# `score_matches` above compares *shingle hashes* and only ever counts EXACT
+# hits. A shingle of size N hashes N consecutive phonetic tokens together, so a
+# single mis-heard / dropped / inserted word from the STT engine destroys every
+# shingle that overlaps it (up to N per size, across all sizes). On clean
+# subtitle-vs-subtitle data that is fine, but on a real microphone re-recording
+# the STT transcript is noisy enough that exact-hash recall collapses.
+#
+# The fuzzy matcher works on the raw *token stream* instead. Given the query's
+# phonetic tokens Q and a candidate reference stream R, it finds the longest
+# common subsequence (LCS) of tokens that appears in the SAME ORDER in both,
+# with arbitrarily large gaps allowed on either side. That means:
+#   * a dropped query word  -> just shortens the subsequence slightly
+#   * an inserted query word -> skipped over (it is a gap)
+#   * a mis-heard word       -> contributes nothing, but its neighbours still do
+# so the score degrades gracefully instead of falling off a cliff.
+#
+# LCS over two long sequences is O(n*m); we make it cheap with the classic
+# "LCS via Longest Increasing Subsequence" trick: because we only need the
+# length (not the alignment), we map every query token to the reference
+# positions where it occurs, lay those positions out in query order (each query
+# index's positions in DESCENDING order so one query token is used at most once
+# per increasing run), and take the Longest Strictly Increasing Subsequence of
+# the resulting position list. Its length == LCS length, in O(M log M) where M
+# is the number of (query-token, reference-position) co-occurrences.
+
+
+def _lis_length(seq: List[int]) -> int:
+    """Length of the Longest Strictly Increasing Subsequence of ``seq``."""
+    import bisect
+    tails: List[int] = []
+    for x in seq:
+        i = bisect.bisect_left(tails, x)
+        if i == len(tails):
+            tails.append(x)
+        else:
+            tails[i] = x
+    return len(tails)
+
+
+def _fuzzy_lcs_length(query: List[str], ref: List[str],
+                      ref_index: Optional[Dict[str, List[int]]] = None
+                      ) -> Tuple[int, Optional[int], Optional[int]]:
+    """Return (lcs_len, first_ref_pos, last_ref_pos) for the order-preserving
+    longest common subsequence of phonetic tokens between query and ref.
+
+    ``ref_index`` (token -> ascending list of positions in ``ref``) may be
+    supplied pre-built to avoid recomputing it per query window.
+    """
+    if not query or not ref:
+        return 0, None, None
+    if ref_index is None:
+        ref_index = {}
+        for pos, tok in enumerate(ref):
+            ref_index.setdefault(tok, []).append(pos)
+
+    positions: List[int] = []
+    for tok in query:
+        plist = ref_index.get(tok)
+        if plist:
+            # descending so a single query token can only extend the increasing
+            # run with ONE of its occurrences (prevents self-overlap inflation)
+            positions.extend(reversed(plist))
+    if not positions:
+        return 0, None, None
+    lcs = _lis_length(positions)
+    return lcs, min(positions), max(positions)
+
+
+@dataclass
+class FuzzyConfig:
+    enabled: bool = True
+    min_lcs_ratio: float = 0.45      # min LCS/len(query) to accept a fuzzy match
+    min_query_tokens: int = 8        # below this the query is too short to trust
+    weight: float = 1.0              # scale applied to fuzzy confidence
+    # Order-preserving LCS is biased toward longer references (a longer episode
+    # contains more of any token by chance) and toward common function words, so
+    # on a short / noisy query the top two candidates can sit very close
+    # together. ``min_margin`` requires the winner to beat the runner-up by this
+    # confidence gap before the fuzzy result is trusted; ambiguous matches
+    # (e.g. 0.87 vs 0.81) are rejected and the caller keeps the safer exact /
+    # acoustic verdict instead of guessing.
+    min_margin: float = 0.12
+
+    @classmethod
+    def from_config(cls, cfg: dict) -> "FuzzyConfig":
+        fz = (cfg.get("matching", {}) or {}).get("fuzzy", {}) or {}
+        return cls(
+            enabled=fz.get("enabled", True),
+            min_lcs_ratio=fz.get("min_lcs_ratio", 0.45),
+            min_query_tokens=fz.get("min_query_tokens", 8),
+            weight=fz.get("weight", 1.0),
+            min_margin=fz.get("min_margin", 0.12),
+        )
+
+
+def score_fuzzy_matches(query_tokens: List[str],
+                        candidate_streams: Dict[int, Tuple[MediaInfo, List[str], List[Optional[int]]]],
+                        fuzzy_cfg: Optional[FuzzyConfig] = None,
+                        top_n: int = 5) -> List[MatchResult]:
+    """Rank candidates by order-preserving phonetic LCS against the query.
+
+    Parameters
+    ----------
+    query_tokens
+        Phonetic token stream of the unknown audio (see ``phonetic_token_stream``).
+    candidate_streams
+        Mapping ``media_id -> (MediaInfo, ref_tokens, ref_starts)``. Typically the
+        handful of episodes shortlisted by the acoustic stage (loaded via
+        ``FingerprintDB.get_token_stream``).
+    fuzzy_cfg
+        Tuning thresholds (see :class:`FuzzyConfig`).
+    top_n
+        Max results to return.
+
+    Returns a list of :class:`MatchResult` sorted by confidence, where
+    ``confidence = (LCS length / query length) * weight`` and ``match_count`` is
+    the raw LCS length. The reported time window is derived from the cue start
+    times of the first and last matched reference positions.
+    """
+    cfg = fuzzy_cfg or FuzzyConfig()
+    q = list(query_tokens)
+    if not q:
+        return []
+    qlen = len(q)
+
+    results: List[MatchResult] = []
+    for mid, (info, ref_tokens, ref_starts) in candidate_streams.items():
+        if not ref_tokens:
+            continue
+        lcs, first_pos, last_pos = _fuzzy_lcs_length(q, ref_tokens)
+        if lcs <= 0:
+            continue
+        confidence = min(1.0, (lcs / qlen) * cfg.weight)
+
+        win_start = win_end = None
+        if ref_starts:
+            if first_pos is not None and first_pos < len(ref_starts):
+                win_start = ref_starts[first_pos]
+            if last_pos is not None and last_pos < len(ref_starts):
+                win_end = ref_starts[last_pos]
+
+        results.append(MatchResult(
+            media=info, media_id=mid, confidence=confidence,
+            match_count=lcs, query_count=qlen,
             window_start_ms=win_start, window_end_ms=win_end,
         ))
 

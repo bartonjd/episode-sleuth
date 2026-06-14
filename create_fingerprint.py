@@ -35,7 +35,7 @@ import logging
 
 from fingerprint_core import (
     load_config, setup_logging, FingerprintConfig, FingerprintDB,
-    MediaInfo, fingerprint_text,
+    MediaInfo, fingerprint_text, phonetic_token_stream,
 )
 import subtitle_utils as su
 
@@ -64,16 +64,27 @@ def fingerprint_subtitle_file(path: str, db: FingerprintDB, fp_cfg: FingerprintC
 
     total = 0
     rows = []
+    # Accumulate the full ordered phonetic token stream (with a parallel list of
+    # cue start times) so the fuzzy / order-preserving matcher can be used later.
+    token_stream: list = []
+    token_starts: list = []
     for (start_ms, end_ms, text) in cues:
         for (h, size) in fingerprint_text(text, fp_cfg):
             rows.append((h, size, start_ms, end_ms))
+        for tok in phonetic_token_stream(text, fp_cfg):
+            token_stream.append(tok)
+            token_starts.append(start_ms)
         if len(rows) >= 5000:
             total += db.add_fingerprints(media_id, rows)
             rows = []
     if rows:
         total += db.add_fingerprints(media_id, rows)
 
-    logging.info("  + %-45s -> %5d fingerprints", info.label(), total)
+    if token_stream:
+        db.add_token_stream(media_id, token_stream, token_starts)
+
+    logging.info("  + %-45s -> %5d fingerprints, %5d tokens",
+                 info.label(), total, len(token_stream))
     return total
 
 

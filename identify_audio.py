@@ -35,6 +35,7 @@ import collections
 from fingerprint_core import (
     load_config, setup_logging, FingerprintConfig, FingerprintDB,
     fingerprint_text, score_matches,
+    phonetic_token_stream, score_fuzzy_matches, FuzzyConfig, MediaInfo,
 )
 import stt_utils
 
@@ -325,6 +326,70 @@ def print_combined_result(phon_best, ac_best, cfg, ac_cfg):
     return method, best
 
 
+def _load_candidate_streams(db, media_ids, fp_cfg):
+    """Load ``media_id -> (MediaInfo, ref_tokens, ref_starts)`` for the fuzzy
+    matcher. Only media rows that actually have a stored token stream are
+    returned (subtitle rows); acoustic-only media-file rows are skipped."""
+    streams = {}
+    for mid in media_ids:
+        toks, starts = db.get_token_stream(mid)
+        if not toks:
+            continue
+        info = db.media_info(mid)
+        if info is None:
+            continue
+        streams[mid] = (info, toks, starts)
+    return streams
+
+
+def run_fuzzy_stage(query_text, db, fp_cfg, cfg, candidate_ids):
+    """Order-preserving phonetic LCS matching as a fallback / confirmation when
+    exact shingle-hash matching is weak (STT word errors).
+
+    Searches the supplied ``candidate_ids`` first (the acoustic shortlist) and
+    widens to every media with a token stream if those yield nothing. Returns a
+    list of MatchResult (possibly empty) and the FuzzyConfig that was used.
+    """
+    fuzzy_cfg = FuzzyConfig.from_config(cfg)
+    if not fuzzy_cfg.enabled or not query_text.strip():
+        return [], fuzzy_cfg
+    q_tokens = phonetic_token_stream(query_text, fp_cfg)
+    if len(q_tokens) < fuzzy_cfg.min_query_tokens:
+        logging.info("  fuzzy: query too short (%d < %d tokens), skipping",
+                     len(q_tokens), fuzzy_cfg.min_query_tokens)
+        return [], fuzzy_cfg
+
+    top_k = cfg.get("hybrid", {}).get("top_candidates_count", 5)
+    scope = list(candidate_ids) if candidate_ids else []
+    streams = _load_candidate_streams(db, scope, fp_cfg) if scope else {}
+    if not streams:
+        # widen to the whole token-stream corpus
+        streams = _load_candidate_streams(
+            db, db.all_token_stream_media_ids(), fp_cfg)
+    if not streams:
+        return [], fuzzy_cfg
+    results = score_fuzzy_matches(q_tokens, streams, fuzzy_cfg, top_n=top_k)
+    # only keep results that clear the configured LCS ratio
+    results = [r for r in results if r.confidence >= fuzzy_cfg.min_lcs_ratio]
+    if not results:
+        return [], fuzzy_cfg
+
+    # Margin gate: order-preserving LCS is biased toward longer / common-word
+    # references, so a short noisy query can leave the top two candidates almost
+    # tied (e.g. 0.87 vs 0.81). Only trust the winner when it clearly beats the
+    # runner-up; otherwise the match is ambiguous and we return nothing so the
+    # caller falls back to the safer exact / acoustic verdict.
+    if len(results) >= 2:
+        margin = results[0].confidence - results[1].confidence
+        if margin < fuzzy_cfg.min_margin:
+            logging.info("  fuzzy: ambiguous (%.0f%% vs %.0f%%, margin %.0f%% < "
+                         "%.0f%%) - rejecting", results[0].confidence * 100,
+                         results[1].confidence * 100, margin * 100,
+                         fuzzy_cfg.min_margin * 100)
+            return [], fuzzy_cfg
+    return results, fuzzy_cfg
+
+
 def identify_hybrid_file(path, db, fp_cfg, ac_cfg, transcriber, cfg):
     """Two-stage hybrid identification (the recommended, Shazam-like mode).
 
@@ -385,6 +450,8 @@ def identify_hybrid_file(path, db, fp_cfg, ac_cfg, transcriber, cfg):
     t1 = time.time()
     logging.info("Stage 2/2: scoped phonetic confirmation ...")
     phon_results = []
+    fuzzy_results = []
+    text = ""
     if transcriber is not None:
         cues = transcribe_file(path, transcriber, cfg)
         text = " ".join(t for (_a, _b, t) in cues)
@@ -417,12 +484,45 @@ def identify_hybrid_file(path, db, fp_cfg, ac_cfg, transcriber, cfg):
     else:
         print("    (no phonetic match)")
 
+    # ---- Stage 2b: fuzzy phonetic fallback ----------------------------------
+    # Exact shingle-hash matching can collapse on noisy STT output (one wrong
+    # word breaks every shingle that overlaps it). When the exact result is
+    # missing or below threshold, fall back to the order-preserving LCS matcher,
+    # which tolerates dropped / mis-heard / inserted words.
+    best_exact = phon_results[0] if phon_results else None
+    need_fuzzy = (best_exact is None) or (best_exact.confidence < phon_thr)
+    if need_fuzzy and text.strip():
+        t2 = time.time()
+        logging.info("Stage 2b/2: exact phonetic weak -> fuzzy LCS fallback ...")
+        fuzzy_results, fuzzy_cfg = run_fuzzy_stage(
+            text, db, fp_cfg, cfg, candidate_ids)
+        t_fuzzy = time.time() - t2
+        t_phon += t_fuzzy
+        print(f"\n[Stage 2b] Fuzzy phonetic LCS ({t_fuzzy:.2f}s)  "
+              f"-> order-preserving match (min ratio "
+              f"{fuzzy_cfg.min_lcs_ratio:.0%}):")
+        if fuzzy_results:
+            for i, r in enumerate(fuzzy_results[:5], 1):
+                flag = ">>" if i == 1 else "  "
+                print(f"  {flag} {i}. {r.media.label():38} "
+                      f"fuzzy={r.confidence:5.1%} "
+                      f"(LCS {r.match_count}/{r.query_count})")
+        else:
+            print("    (no fuzzy match above ratio)")
+
     # ---- Final verdict -------------------------------------------------------
     print("\n" + "-" * 60)
     best = phon_results[0] if phon_results else None
+    method = "hybrid (acoustic shortlist + phonetic confirm)"
+    # Prefer exact phonetic if it clears the threshold; otherwise consider fuzzy.
+    if not (best and best.confidence >= phon_thr) and fuzzy_results:
+        fbest = fuzzy_results[0]
+        if best is None or fbest.confidence > best.confidence:
+            best = fbest
+            method = "hybrid (acoustic shortlist + fuzzy phonetic LCS)"
     if best and best.confidence >= phon_thr:
         print(f">>> IDENTIFIED: {best.media.label()}  ({best.confidence:.1%})")
-        print(f"    method: hybrid (acoustic shortlist + phonetic confirm)")
+        print(f"    method: {method}")
     elif best:
         print(f">>> Best guess: {best.media.label()}  "
               f"({best.confidence:.1%}) - below threshold {phon_thr:.0%}")
@@ -470,6 +570,7 @@ def run_hybrid_live(db, fp_cfg, ac_cfg, transcriber, cfg,
     step_bytes = max(1, (window_s - overlap_s)) * sr * 2
     buf = bytearray()
     recent_hashes = collections.deque(maxlen=2000)
+    recent_text = collections.deque(maxlen=40)   # for fuzzy LCS fallback
     start_time = time.time()
     last_ac_eval = 0.0
     try:
@@ -505,6 +606,7 @@ def run_hybrid_live(db, fp_cfg, ac_cfg, transcriber, cfg,
                 if text:
                     logging.info("heard: %s", text[:70])
                     recent_hashes.extend(h for (h, _s) in fingerprint_text(text, fp_cfg))
+                    recent_text.append(text)
                     query = list(recent_hashes)
                     scope = candidate_ids if candidate_ids else None
                     rows = db.lookup(query, media_ids=scope)
@@ -517,6 +619,15 @@ def run_hybrid_live(db, fp_cfg, ac_cfg, transcriber, cfg,
                         print_live_result(results, phon_thr, method="hybrid")
                         if once:
                             break
+                    else:
+                        # exact matching weak -> fuzzy order-preserving LCS
+                        fuzzy_results, _fz = run_fuzzy_stage(
+                            " ".join(recent_text), db, fp_cfg, cfg, candidate_ids)
+                        if fuzzy_results and fuzzy_results[0].confidence >= phon_thr:
+                            print_live_result(fuzzy_results, phon_thr,
+                                              method="hybrid-fuzzy")
+                            if once:
+                                break
                 del buf[:step_bytes]
 
             if max_seconds and (time.time() - start_time) > max_seconds:

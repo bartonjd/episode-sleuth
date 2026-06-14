@@ -66,9 +66,14 @@ STAGE 1 — ACOUSTIC SHORTLIST (fast, noise-tolerant)
                 ──▶ keep top-N candidate episodes  (default 5)
 
 STAGE 2 — SCOPED PHONETIC CONFIRMATION (precise)
-  unknown audio ──▶ transcribe (STT) ──▶ phonetic match
+  unknown audio ──▶ transcribe (STT) ──▶ EXACT shingle-hash match
                 ──▶ *restricted to the shortlisted candidates only*
                 ──▶ final, confident episode
+
+STAGE 2b — FUZZY PHONETIC FALLBACK (only if Stage 2 is weak)
+  noisy transcript ──▶ order-preserving phonetic LCS
+                   ──▶ tolerates dropped / mis-heard / inserted words
+                   ──▶ margin-gated so ambiguous near-ties are rejected
 ```
 
 Why this is better:
@@ -85,10 +90,44 @@ Why this is better:
 * **Safety net** — if the acoustic stage returns no candidates, Stage 2
   automatically widens to a full-database phonetic search, so identification
   still succeeds.
+* **Fuzzy fallback (Stage 2b)** — exact shingle hashing only ever counts
+  *identical* hashes, so a single mis-heard / dropped word from the STT engine
+  breaks every shingle that overlaps it. When the exact result is missing or
+  below `phonetic_confirm_threshold`, the hybrid runs an **order-preserving
+  phonetic LCS** matcher instead (see below), which degrades gracefully on noisy
+  microphone transcripts.
 
 The older `--both` mode (run both methods independently over the whole database
 and report the more confident) is still available, but `--hybrid` is the
 recommended default.
+
+#### Fuzzy (order-preserving) phonetic matching
+
+The exact matcher hashes 3/4/5 consecutive phonetic tokens into one opaque
+value, so it is precise but brittle: one STT error destroys up to N shingles per
+size. The fuzzy matcher instead keeps the raw **ordered stream of phonetic
+tokens** for every reference (stored in the `media_tokens` table) and scores a
+candidate by the **Longest Common Subsequence (LCS)** of tokens shared, *in the
+same order*, with the query:
+
+* a **dropped** query word merely shortens the subsequence,
+* an **inserted** word is skipped over (it becomes a gap),
+* a **mis-heard** word contributes nothing but its neighbours still align,
+
+so the score falls gracefully instead of off a cliff. LCS length is computed in
+`O(M log M)` via the classic *LCS-as-Longest-Increasing-Subsequence* trick (map
+each query token to its reference positions in descending order, take the LIS),
+and `confidence = LCS length / query length`.
+
+Because LCS is biased toward **longer references** (a bigger episode contains
+more of any token by chance) and toward **common function words**, the fuzzy
+result is only trusted when the top candidate beats the runner-up by
+`min_margin` — ambiguous near-ties (e.g. 0.87 vs 0.81) are rejected so the
+system keeps the safer exact/acoustic verdict rather than guessing. This is why
+fuzzy is a *fallback*, never an override of a confident exact match.
+
+The reference token streams are built automatically by `create_fingerprint.py`
+alongside the shingle hashes — no extra step is required.
 
 ## Components
 
@@ -222,3 +261,16 @@ Example `--hybrid` output:
 | `top_candidates_count` | How many episodes the acoustic stage shortlists for phonetic confirmation (default 5) |
 | `acoustic_shortlist_threshold` | Drop shortlist candidates below this acoustic confidence; `0.0` keeps all top-N (default 0.0) |
 | `phonetic_confirm_threshold` | Minimum phonetic confidence for the final hybrid verdict (default 0.15) |
+
+### Fuzzy matching configuration (`config.json` → `"matching"."fuzzy"`)
+
+The order-preserving phonetic LCS fallback (Stage 2b). It only runs when the
+exact phonetic result is missing or below `phonetic_confirm_threshold`.
+
+| Key | Meaning |
+|-----|---------|
+| `enabled` | Turn the fuzzy fallback on/off (default `true`) |
+| `min_lcs_ratio` | Minimum `LCS length / query tokens` to accept a fuzzy match (default 0.45) |
+| `min_query_tokens` | Skip fuzzy when the query has fewer phonetic tokens than this — too little signal to trust (default 8) |
+| `min_margin` | The top candidate must beat the runner-up by this confidence gap, else the match is treated as ambiguous and rejected (default 0.12) |
+| `weight` | Scale applied to the raw fuzzy confidence before thresholding (default 1.0) |

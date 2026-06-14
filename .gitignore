@@ -1,6 +1,11 @@
 # Fingerprint database (generated)
 *.db
+*.db.bak
 *.sqlite
+
+# Local test recordings / audio samples (not source)
+*.m4a
+*.wav
 
 # Downloaded subtitles
 downloads/

@@ -17,6 +17,7 @@ import tempfile
 
 from fingerprint_core import (
     load_config, FingerprintConfig, FingerprintDB, fingerprint_text, score_matches,
+    phonetic_token_stream, score_fuzzy_matches, FuzzyConfig,
 )
 import create_fingerprint as cf
 
@@ -58,6 +59,17 @@ NOISY_TRANSCRIPT = (
     "ladies and gentlemen of the jurry consider the evidence carefuly"
 )
 
+# HEAVILY degraded transcript of EP1: ~40% of words dropped + mis-heard, plus
+# some inserted filler words. Exact shingle hashing struggles badly here because
+# nearly every 3/4/5-token shingle is broken by a gap; the order-preserving
+# fuzzy matcher should still recover the correct episode.
+FUZZY_TRANSCRIPT = (
+    "honour object um entire questioning "
+    "witness no knowledge events night "
+    "uh matlock prove client innocent charges "
+    "gentlemen jury evidence"
+)
+
 
 def main():
     tmpdir = tempfile.mkdtemp(prefix="fp_selftest_")
@@ -97,6 +109,38 @@ def main():
 
     print("\n   PASS: correct episode (S01E01) identified from noisy transcript.")
     print(f"   Best match: {best.media.label()} @ {best.confidence:.1%}")
+
+    # ---- Step 3: fuzzy (order-preserving LCS) on a HEAVILY degraded query -----
+    print("\n3) Fuzzy phonetic LCS match on heavily degraded transcript ...")
+    # Build candidate streams exactly like the hybrid identifier does.
+    streams = {}
+    for mid in db.all_token_stream_media_ids():
+        toks, starts = db.get_token_stream(mid)
+        streams[mid] = (db.media_info(mid), toks, starts)
+    assert streams, "No token streams were stored during fingerprinting!"
+
+    q_tokens = phonetic_token_stream(FUZZY_TRANSCRIPT, fp_cfg)
+    fuzzy_cfg = FuzzyConfig.from_config(cfg)
+    fz = score_fuzzy_matches(q_tokens, streams, fuzzy_cfg, top_n=5)
+    print("   Fuzzy ranked results:")
+    for r in fz:
+        print(f"     - {r.media.label():28} fuzzy={r.confidence:.1%} "
+              f"LCS={r.match_count}/{r.query_count}")
+
+    # Show that exact hashing is weaker on this heavily-degraded query.
+    eq = [h for (h, _s) in fingerprint_text(FUZZY_TRANSCRIPT, fp_cfg)]
+    exact = score_matches(eq, db.lookup(eq), cfg.get("matching", {}))
+    exact_best = exact[0].confidence if exact else 0.0
+    print(f"   (exact-hash best for same query: {exact_best:.1%})")
+
+    assert fz, "Fuzzy matcher returned no results!"
+    fbest = fz[0]
+    assert fbest.media.season == 1 and fbest.media.episode == 1, \
+        f"Fuzzy matched wrong episode: {fbest.media.label()}"
+    assert fbest.confidence >= fuzzy_cfg.min_lcs_ratio, \
+        f"Fuzzy confidence {fbest.confidence:.1%} below ratio {fuzzy_cfg.min_lcs_ratio:.0%}"
+    print(f"\n   PASS: fuzzy recovered S01E01 @ {fbest.confidence:.1%} "
+          f"(>= {fuzzy_cfg.min_lcs_ratio:.0%} ratio).")
 
     db.close()
     print("\nSELF-TEST PASSED ✔")
