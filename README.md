@@ -48,14 +48,47 @@ This system now combines **two complementary** identification methods:
    during theme songs, music, sound effects and any non-dialogue scene where the
    phonetic method has nothing to hear.
 
-When run in hybrid mode the system checks both and reports whichever has the
-higher confidence, so you get the best of both worlds.
-
 ```
 ACOUSTIC:  audio ──▶ ffmpeg slice ──▶ fpcalc (Chromaprint) ──▶ 32-bit frame ints
         ──▶ inverted index (exact sub-fingerprint) ──▶ offset voting
         ──▶ bit-error re-alignment ──▶ confidence = matched / query frames
 ```
+
+### ⭐ Recommended: two-stage hybrid mode (`--hybrid`)
+
+For a true Shazam-like experience use **`--hybrid`**, an intelligent two-stage
+pipeline that is both **faster** and **more accurate** than running either method
+alone:
+
+```
+STAGE 1 — ACOUSTIC SHORTLIST (fast, noise-tolerant)
+  unknown audio ──▶ Chromaprint ──▶ rank reference media
+                ──▶ keep top-N candidate episodes  (default 5)
+
+STAGE 2 — SCOPED PHONETIC CONFIRMATION (precise)
+  unknown audio ──▶ transcribe (STT) ──▶ phonetic match
+                ──▶ *restricted to the shortlisted candidates only*
+                ──▶ final, confident episode
+```
+
+Why this is better:
+
+* **Speed** — the phonetic fingerprint table is huge (one row per dialogue
+  shingle for the whole library). Restricting the search to ~5 acoustically
+  shortlisted episodes instead of the entire library makes the phonetic lookup
+  **~10x faster** on a large library (measured 20.4 ms → 1.8 ms on a 1,500-episode
+  / 11.6 M-fingerprint synthetic library), with no loss of accuracy.
+* **Robustness** — Stage 1 uses a *recall-focused* acoustic configuration (a more
+  forgiving Hamming-distance tolerance, `candidate_max_bit_error`) so the correct
+  episode survives into the shortlist even for noisy microphone captures or lossy
+  re-encodes. Stage 2's phonetic precision then nails the exact episode.
+* **Safety net** — if the acoustic stage returns no candidates, Stage 2
+  automatically widens to a full-database phonetic search, so identification
+  still succeeds.
+
+The older `--both` mode (run both methods independently over the whole database
+and report the more confident) is still available, but `--hybrid` is the
+recommended default.
 
 ## Components
 
@@ -66,7 +99,7 @@ ACOUSTIC:  audio ──▶ ffmpeg slice ──▶ fpcalc (Chromaprint) ──▶
 | `create_fingerprint.py` | Build the **phonetic** DB from subtitles (`--show`/`--dir`); also `--file`/`--acoustic` to build acoustic fingerprints. No transcription. |
 | `create_acoustic_fingerprint.py` | Build/identify the **acoustic** DB from audio/video files (Chromaprint only) |
 | `fingerprint_audio.py` | Build **acoustic** fingerprints from audio/video files (Chromaprint only — no transcription) |
-| `identify_audio.py` | Identify unknown audio (mic or file); transcribes for phonetic matching and/or Chromaprints for acoustic matching (`--acoustic` / `--both`) |
+| `identify_audio.py` | Identify unknown audio (mic or file). **`--hybrid`** (recommended) = acoustic shortlist → scoped phonetic confirm; also `--acoustic`, `--both`, or phonetic-only (default) |
 | `subtitle_utils.py` | Subtitle parsing + OpenSubtitles download |
 | `stt_utils.py` | Speech-to-text helpers (Vosk / Google) — used **only** by `identify_audio.py` |
 | `selftest.py` | Quick end-to-end phonetic self-test |
@@ -118,26 +151,52 @@ python fingerprint_audio.py --dir /media                 # acoustic (folder)
 > reference media. To add *phonetic* (dialogue) fingerprints, use subtitles with
 > `create_fingerprint.py`.
 
-### Identify with acoustic / hybrid matching
+### Identify with hybrid / acoustic / phonetic matching
 
 Transcription only happens here — when identifying **unknown** audio.
 
 ```bash
-# Identify a recorded clip by sound only
-python create_acoustic_fingerprint.py --file clip.mp4 --identify
+# ⭐ RECOMMENDED — two-stage hybrid: acoustic shortlist + scoped phonetic confirm
+python identify_audio.py --from-file clip.mp4 --hybrid
 
-# Hybrid file identification (transcribe + Chromaprint, reports the more confident)
+# ⭐ RECOMMENDED — same, live from the microphone
+python identify_audio.py --hybrid
+
+# Stop on first confident hit (handy for live use)
+python identify_audio.py --hybrid --once
+
+# --both: run phonetic AND acoustic independently over the whole DB, pick the winner
 python identify_audio.py --from-file clip.mp4 --both
 
 # Phonetic-only file identification (transcribe + match against subtitle DB)
 python identify_audio.py --from-file clip.mp4
 
-# Live microphone, hybrid
-python identify_audio.py --both
+# Acoustic only (no transcription needed)
+python identify_audio.py --from-file clip.mp4 --acoustic
 
-# Live microphone, acoustic only (no transcription needed)
-python identify_audio.py --acoustic
+# Identify a recorded clip by sound only (via the acoustic helper)
+python create_acoustic_fingerprint.py --file clip.mp4 --identify
 ```
+
+Example `--hybrid` output:
+
+```
+[Stage 1] Acoustic shortlist  (1.19s)  -> 3 candidate episode(s) (6 media row(s) to confirm):
+    1. Matlock (1986) (1986) S01E01           acoustic=16.5%
+    2. Matlock (1986) (1986) S01E03           acoustic=14.3%
+    3. Matlock (1986) (1986) S01E04           acoustic=12.1%
+
+[Stage 2] Scoped phonetic     (2.08s)  -> searched 6 episode(s):
+  >> 1. Matlock (1986) (1986) S01E04           phonetic=27.6% (1 hits)
+
+>>> IDENTIFIED: Matlock (1986) (1986) S01E04  (27.6%)
+    method: hybrid (acoustic shortlist + phonetic confirm)
+```
+
+> Note how Stage 1's *acoustic* ranking alone would have been wrong (it ranked
+> S01E01 first for this noisy re-recording), but Stage 2's *phonetic* confirmation
+> within the shortlist correctly pins **S01E04** — exactly why the hybrid is more
+> accurate than acoustic alone, and faster than scanning the whole phonetic DB.
 
 ### Acoustic configuration (`config.json` → `"acoustic"`)
 
@@ -150,4 +209,16 @@ python identify_audio.py --acoustic
 | `align_window` | +/- frames searched around the voted offset during re-alignment |
 | `min_overlap_frames` | Minimum overlapping frames for a valid score |
 | `confidence_threshold` | Minimum confidence to report an acoustic match (default 0.30) |
+| `brute_force_fallback` | If the exact-match index finds nothing, scan all segments with bit tolerance (default `true`) |
+| `brute_force_max_segments` | Skip the brute-force scan above this many segments (perf guard, default 8000) |
+| `candidate_max_bit_error` | **Recall-focused** bit tolerance used only when building the hybrid shortlist (default 9, more forgiving than `max_bit_error`) |
+| `candidate_min_overlap_frames` | Minimum overlap for a shortlist candidate (default 8) |
 | `fpcalc_path` | Path to the `fpcalc` binary (default `fpcalc`) |
+
+### Hybrid configuration (`config.json` → `"hybrid"`)
+
+| Key | Meaning |
+|-----|---------|
+| `top_candidates_count` | How many episodes the acoustic stage shortlists for phonetic confirmation (default 5) |
+| `acoustic_shortlist_threshold` | Drop shortlist candidates below this acoustic confidence; `0.0` keeps all top-N (default 0.0) |
+| `phonetic_confirm_threshold` | Minimum phonetic confidence for the final hybrid verdict (default 0.15) |

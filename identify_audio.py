@@ -325,10 +325,218 @@ def print_combined_result(phon_best, ac_best, cfg, ac_cfg):
     return method, best
 
 
+def identify_hybrid_file(path, db, fp_cfg, ac_cfg, transcriber, cfg):
+    """Two-stage hybrid identification (the recommended, Shazam-like mode).
+
+    Stage 1 - ACOUSTIC SHORTLIST: fingerprint the audio and acoustically rank
+              the reference media, keeping the top ``top_candidates_count``
+              episodes as candidates. This is fast and noise-tolerant (uses the
+              recall-focused acoustic config).
+    Stage 2 - SCOPED PHONETIC: transcribe the audio and run phonetic matching
+              *only against the shortlisted candidates*. Because the phonetic
+              fingerprint table is large, scoping it to a handful of episodes is
+              dramatically faster than a full-database search, while phonetic
+              precision confirms the exact episode.
+
+    If the acoustic stage finds no candidates at all, the phonetic stage falls
+    back to a full-database search so identification still succeeds.
+    """
+    import acoustic_fingerprint as af
+
+    hyb_cfg = cfg.get("hybrid", {})
+    top_k = hyb_cfg.get("top_candidates_count", 5)
+    ac_stage_thr = hyb_cfg.get("acoustic_shortlist_threshold", 0.0)
+    phon_thr = hyb_cfg.get("phonetic_confirm_threshold",
+                           cfg.get("matching", {}).get("confidence_threshold", 0.15))
+
+    print("\n" + "=" * 60)
+    print("HYBRID IDENTIFICATION (acoustic shortlist -> scoped phonetic)")
+    print("=" * 60)
+
+    # ---- Stage 1: acoustic shortlist ----------------------------------------
+    t0 = time.time()
+    logging.info("Stage 1/2: acoustic shortlist of %s ...", os.path.basename(path))
+    ac_results = af.shortlist_candidates(path, db, ac_cfg, top_n=top_k)
+    # apply optional shortlist threshold (keep at least the single best)
+    if ac_stage_thr > 0 and ac_results:
+        kept = [r for r in ac_results if r.confidence >= ac_stage_thr]
+        ac_results = kept or ac_results[:1]
+    t_ac = time.time() - t0
+
+    # Resolve the acoustic candidates (which come from media-FILE rows) to ALL
+    # media ids for the same episodes, including the SUBTITLE rows that actually
+    # hold the phonetic fingerprints. Scoping by raw media_id alone would miss
+    # them, because subtitles and media files are stored as separate media rows.
+    episode_keys = [(r.media.title, r.media.season, r.media.episode)
+                    for r in ac_results]
+    candidate_ids = db.media_ids_for_episodes(episode_keys) if episode_keys else []
+    print(f"\n[Stage 1] Acoustic shortlist  ({t_ac:.2f}s)  "
+          f"-> {len(ac_results)} candidate episode(s) "
+          f"({len(candidate_ids)} media row(s) to confirm):")
+    if ac_results:
+        for i, r in enumerate(ac_results, 1):
+            print(f"    {i}. {r.media.label():38} "
+                  f"acoustic={r.confidence:5.1%}")
+    else:
+        print("    (none - acoustic produced no candidates; "
+              "phonetic will search the full database)")
+
+    # ---- Stage 2: scoped phonetic -------------------------------------------
+    t1 = time.time()
+    logging.info("Stage 2/2: scoped phonetic confirmation ...")
+    phon_results = []
+    if transcriber is not None:
+        cues = transcribe_file(path, transcriber, cfg)
+        text = " ".join(t for (_a, _b, t) in cues)
+        if text.strip():
+            query_hashes = [h for (h, _s) in fingerprint_text(text, fp_cfg)]
+            # scope phonetic search to acoustic candidates (None => full DB)
+            scope = candidate_ids if candidate_ids else None
+            rows = db.lookup(query_hashes, media_ids=scope)
+            phon_results = score_matches(query_hashes, rows, cfg.get("matching", {}))
+            if not phon_results and scope is not None:
+                # candidates didn't contain the dialogue; widen to full DB
+                logging.info("  no phonetic hit within shortlist; "
+                             "widening to full database")
+                rows = db.lookup(query_hashes)
+                phon_results = score_matches(query_hashes, rows,
+                                             cfg.get("matching", {}))
+        else:
+            logging.info("  no speech recognised for phonetic confirmation")
+    else:
+        logging.warning("  STT unavailable; cannot run phonetic stage")
+    t_phon = time.time() - t1
+
+    print(f"\n[Stage 2] Scoped phonetic     ({t_phon:.2f}s)  "
+          f"-> searched {len(candidate_ids) or 'all'} episode(s):")
+    if phon_results:
+        for i, r in enumerate(phon_results[:5], 1):
+            flag = ">>" if (i == 1 and r.confidence >= phon_thr) else "  "
+            print(f"  {flag} {i}. {r.media.label():38} "
+                  f"phonetic={r.confidence:5.1%} ({r.match_count} hits)")
+    else:
+        print("    (no phonetic match)")
+
+    # ---- Final verdict -------------------------------------------------------
+    print("\n" + "-" * 60)
+    best = phon_results[0] if phon_results else None
+    if best and best.confidence >= phon_thr:
+        print(f">>> IDENTIFIED: {best.media.label()}  ({best.confidence:.1%})")
+        print(f"    method: hybrid (acoustic shortlist + phonetic confirm)")
+    elif best:
+        print(f">>> Best guess: {best.media.label()}  "
+              f"({best.confidence:.1%}) - below threshold {phon_thr:.0%}")
+    elif ac_results:
+        b = ac_results[0]
+        print(f">>> Best guess (acoustic only): {b.media.label()}  "
+              f"({b.confidence:.1%})")
+    else:
+        print(">>> No match found by either stage.")
+    print(f"    total time: {t_ac + t_phon:.2f}s "
+          f"(acoustic {t_ac:.2f}s + phonetic {t_phon:.2f}s)")
+    print("=" * 60)
+    return best, ac_results
+
+
+def run_hybrid_live(db, fp_cfg, ac_cfg, transcriber, cfg,
+                    max_seconds=None, once=False):
+    """Live two-stage hybrid identification from the microphone.
+
+    Acoustic shortlisting runs on a rolling audio window to keep a current set
+    of candidate episodes; phonetic matching of the transcribed window is then
+    scoped to those candidates for a fast, precise confirmation.
+    """
+    import acoustic_fingerprint as af
+
+    audio_cfg = cfg.get("audio", {})
+    match_cfg = cfg.get("matching", {})
+    hyb_cfg = cfg.get("hybrid", {})
+    sr = audio_cfg.get("sample_rate", 16000)
+    window_s = audio_cfg.get("chunk_seconds", 8)
+    overlap_s = audio_cfg.get("overlap_seconds", 2)
+    top_k = hyb_cfg.get("top_candidates_count", 5)
+    phon_thr = hyb_cfg.get("phonetic_confirm_threshold",
+                           match_cfg.get("confidence_threshold", 0.15))
+    min_matches = match_cfg.get("min_matches", 3)
+
+    ac_window_bytes = ac_cfg.query_chunk_seconds * sr * 2
+    ac_buf = bytearray()
+    candidate_ids = []
+
+    pa, stream, fpb = open_microphone(sr)
+    logging.info("Listening on microphone (%d Hz) [hybrid]. Press Ctrl+C to stop.", sr)
+
+    window_bytes = window_s * sr * 2
+    step_bytes = max(1, (window_s - overlap_s)) * sr * 2
+    buf = bytearray()
+    recent_hashes = collections.deque(maxlen=2000)
+    start_time = time.time()
+    last_ac_eval = 0.0
+    try:
+        while True:
+            data = stream.read(fpb, exception_on_overflow=False)
+            buf.extend(data)
+            ac_buf.extend(data)
+            if len(ac_buf) > ac_window_bytes:
+                del ac_buf[:len(ac_buf) - ac_window_bytes]
+
+            # Stage 1: refresh acoustic shortlist on its own cadence
+            now = time.time()
+            if len(ac_buf) >= ac_window_bytes and \
+                    now - last_ac_eval >= max(1, window_s - overlap_s):
+                last_ac_eval = now
+                ac_results = af.shortlist_candidates_pcm(
+                    bytes(ac_buf), sr, 1, db, ac_cfg, top_n=top_k)
+                # resolve to all media rows (incl. subtitle rows) for the same
+                # episodes so the phonetic stage can actually find dialogue
+                episode_keys = [(r.media.title, r.media.season, r.media.episode)
+                                for r in ac_results]
+                candidate_ids = (db.media_ids_for_episodes(episode_keys)
+                                 if episode_keys else [])
+                if candidate_ids:
+                    logging.info("shortlist: %s",
+                                 ", ".join(f"{r.media.label()} ({r.confidence:.0%})"
+                                           for r in ac_results[:3]))
+
+            # Stage 2: scoped phonetic on the transcribed window
+            if len(buf) >= window_bytes and transcriber is not None:
+                seg = pcm_to_segment(bytes(buf[-window_bytes:]), sr)
+                text = transcriber.transcribe_segment(seg)
+                if text:
+                    logging.info("heard: %s", text[:70])
+                    recent_hashes.extend(h for (h, _s) in fingerprint_text(text, fp_cfg))
+                    query = list(recent_hashes)
+                    scope = candidate_ids if candidate_ids else None
+                    rows = db.lookup(query, media_ids=scope)
+                    results = score_matches(query, rows, match_cfg)
+                    if not results and scope is not None:
+                        rows = db.lookup(query)
+                        results = score_matches(query, rows, match_cfg)
+                    if results and results[0].confidence >= phon_thr \
+                            and results[0].match_count >= min_matches:
+                        print_live_result(results, phon_thr, method="hybrid")
+                        if once:
+                            break
+                del buf[:step_bytes]
+
+            if max_seconds and (time.time() - start_time) > max_seconds:
+                logging.info("Reached time limit (%ss).", max_seconds)
+                break
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        stream.stop_stream()
+        stream.close()
+        pa.terminate()
+
+
 def run_file_fallback(path, db, fp_cfg, transcriber, cfg,
-                      use_phonetic=True, use_acoustic=False, ac_cfg=None):
+                      use_phonetic=True, use_acoustic=False, ac_cfg=None,
+                      use_hybrid=False):
     """Identify from a recorded file (useful when no mic is available)."""
-    if use_acoustic:
+    if use_hybrid:
+        identify_hybrid_file(path, db, fp_cfg, ac_cfg, transcriber, cfg)
+    elif use_acoustic:
         identify_combined(
             path, db, fp_cfg, ac_cfg, transcriber, cfg,
             use_phonetic, use_acoustic)
@@ -346,7 +554,12 @@ def main(argv=None):
                              "(identify by sound, no transcription)")
     parser.add_argument("--both", action="store_true",
                         help="Use BOTH phonetic (dialogue) and acoustic (sound) "
-                             "matching and report whichever is more confident")
+                             "matching independently and report whichever is "
+                             "more confident")
+    parser.add_argument("--hybrid", action="store_true",
+                        help="RECOMMENDED two-stage mode: acoustic shortlist "
+                             "first, then precise phonetic confirmation scoped "
+                             "to those candidates (fast + robust, Shazam-like)")
     parser.add_argument("--from-file",
                         help="Identify from a recorded audio file instead of the mic")
     parser.add_argument("--config")
@@ -358,8 +571,10 @@ def main(argv=None):
     fp_cfg = FingerprintConfig.from_config(cfg)
 
     # Decide which method(s) to use. Default is phonetic only.
-    use_acoustic = args.acoustic or args.both
-    use_phonetic = args.both or not args.acoustic
+    use_hybrid = args.hybrid
+    # Hybrid needs both engines (acoustic shortlist + phonetic confirm).
+    use_acoustic = args.acoustic or args.both or use_hybrid
+    use_phonetic = args.both or use_hybrid or not args.acoustic
 
     import acoustic_fingerprint as af
     ac_cfg = af.AcousticConfig.from_config(cfg)
@@ -395,7 +610,10 @@ def main(argv=None):
         if args.from_file:
             run_file_fallback(args.from_file, db, fp_cfg, transcriber, cfg,
                               use_phonetic=use_phonetic, use_acoustic=use_acoustic,
-                              ac_cfg=ac_cfg)
+                              ac_cfg=ac_cfg, use_hybrid=use_hybrid)
+        elif use_hybrid:
+            run_hybrid_live(db, fp_cfg, ac_cfg, transcriber, cfg,
+                            max_seconds=args.seconds, once=args.once)
         else:
             run_live(db, fp_cfg, transcriber, cfg,
                      max_seconds=args.seconds, once=args.once,

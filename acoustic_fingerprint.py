@@ -84,6 +84,15 @@ class AcousticConfig:
     # only enabled when the reference DB is small enough to scan quickly.
     brute_force_fallback: bool = True
     brute_force_max_segments: int = 8000
+    # Recall-focused bit tolerance used ONLY when building a candidate shortlist
+    # for the two-stage hybrid workflow. Real-world microphone / re-recorded
+    # audio is noisy, so the strict `max_bit_error` (good for precise scoring)
+    # can rank the true episode just below noise. For shortlisting we only need
+    # the correct episode to appear among the top-N candidates, so we use a more
+    # forgiving threshold here to maximise recall; the precise phonetic stage
+    # then disambiguates.
+    candidate_max_bit_error: int = 9
+    candidate_min_overlap_frames: int = 8
 
     @classmethod
     def from_config(cls, cfg: dict) -> "AcousticConfig":
@@ -100,6 +109,22 @@ class AcousticConfig:
             query_chunk_seconds=ac.get("query_chunk_seconds", 15),
             brute_force_fallback=ac.get("brute_force_fallback", True),
             brute_force_max_segments=ac.get("brute_force_max_segments", 8000),
+            candidate_max_bit_error=ac.get("candidate_max_bit_error", 9),
+            candidate_min_overlap_frames=ac.get("candidate_min_overlap_frames", 8),
+        )
+
+    def recall_variant(self) -> "AcousticConfig":
+        """Return a copy tuned for high-recall candidate shortlisting.
+
+        Used by the hybrid workflow's acoustic pre-filter: it relaxes the bit
+        tolerance and overlap requirement so the true episode is more likely to
+        survive into the shortlist that the phonetic stage then confirms.
+        """
+        from dataclasses import replace
+        return replace(
+            self,
+            max_bit_error=self.candidate_max_bit_error,
+            min_overlap_frames=self.candidate_min_overlap_frames,
         )
 
 
@@ -569,6 +594,29 @@ def identify_file_acoustic(path: str, db: FingerprintDB, ac_cfg: AcousticConfig,
                 best_by_media[res.media_id] = res
     return sorted(best_by_media.values(),
                   key=lambda r: r.confidence, reverse=True)[:top_n]
+
+
+def shortlist_candidates(path: str, db: FingerprintDB, ac_cfg: AcousticConfig,
+                         top_n: int = 5) -> List[AcousticMatchResult]:
+    """Stage 1 of the hybrid workflow: acoustically shortlist candidate media.
+
+    Returns up to ``top_n`` :class:`AcousticMatchResult`, ordered best-first,
+    using the *recall-focused* acoustic configuration (more forgiving bit
+    tolerance) so the true episode is likely to be present even for noisy
+    microphone captures. The caller then runs precise phonetic matching scoped
+    to ``[r.media_id for r in results]``.
+    """
+    recall_cfg = ac_cfg.recall_variant()
+    return identify_file_acoustic(path, db, recall_cfg, top_n=top_n)
+
+
+def shortlist_candidates_pcm(pcm_bytes: bytes, sample_rate: int, channels: int,
+                             db: FingerprintDB, ac_cfg: AcousticConfig,
+                             top_n: int = 5) -> List[AcousticMatchResult]:
+    """Live-capture variant of :func:`shortlist_candidates` (raw PCM input)."""
+    recall_cfg = ac_cfg.recall_variant()
+    return match_acoustic_pcm(pcm_bytes, sample_rate, channels, db,
+                              recall_cfg, top_n=top_n)
 
 
 def match_acoustic_pcm(pcm_bytes: bytes, sample_rate: int, channels: int,

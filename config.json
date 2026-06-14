@@ -40,7 +40,15 @@
     "index_stride": 1,
     "query_chunk_seconds": 15,
     "brute_force_fallback": true,
-    "brute_force_max_segments": 8000
+    "brute_force_max_segments": 8000,
+    "candidate_max_bit_error": 9,
+    "candidate_min_overlap_frames": 8
+  },
+  "_hybrid_comment": "RECOMMENDED mode (identify_audio.py --hybrid). Stage 1 acoustically shortlists the top_candidates_count most likely episodes (high-recall, noise-tolerant); Stage 2 runs precise phonetic matching scoped ONLY to those candidates. Much faster than full-DB phonetic search and more accurate than acoustic alone. If acoustic finds nothing, phonetic falls back to the full database.",
+  "hybrid": {
+    "top_candidates_count": 5,
+    "acoustic_shortlist_threshold": 0.0,
+    "phonetic_confirm_threshold": 0.15
   },
   "opensubtitles": {
     "provider": "auto",

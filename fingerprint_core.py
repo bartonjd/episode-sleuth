@@ -498,11 +498,31 @@ class FingerprintDB:
         cur.execute("SELECT id FROM acoustic_segments")
         return [r["id"] for r in cur.fetchall()]
 
-    def lookup(self, hashes: Iterable[str]) -> List[sqlite3.Row]:
-        """Return all fingerprint rows (joined with media) matching given hashes."""
+    def lookup(self, hashes: Iterable[str],
+               media_ids: Optional[Iterable[int]] = None) -> List[sqlite3.Row]:
+        """Return all fingerprint rows (joined with media) matching given hashes.
+
+        If ``media_ids`` is given, the search is *scoped* to only those media
+        rows. This powers the two-stage hybrid workflow: acoustic matching first
+        produces a shortlist of candidate episodes, and the (much larger)
+        phonetic search is then restricted to just those candidates, which is
+        dramatically faster than scanning the whole fingerprint table.
+        """
         hashes = list(set(hashes))
         if not hashes:
             return []
+
+        mid_list: Optional[List[int]] = None
+        if media_ids is not None:
+            mid_list = list({int(m) for m in media_ids})
+            if not mid_list:
+                # An explicit but empty candidate set means "nothing to search".
+                return []
+        mid_clause = ""
+        if mid_list is not None:
+            mid_ph = ",".join("?" * len(mid_list))
+            mid_clause = f" AND f.media_id IN ({mid_ph})"
+
         results: List[sqlite3.Row] = []
         cur = self.conn.cursor()
         # chunk to stay within SQLite's variable limit
@@ -510,13 +530,16 @@ class FingerprintDB:
         for i in range(0, len(hashes), CHUNK):
             chunk = hashes[i:i + CHUNK]
             placeholders = ",".join("?" * len(chunk))
+            params = list(chunk)
+            if mid_list is not None:
+                params += mid_list
             cur.execute(
                 f"""SELECT f.hash, f.shingle_size, f.start_ms, f.end_ms,
                            m.id AS media_id, m.title, m.year, m.media_type,
                            m.season, m.episode
                     FROM fingerprints f JOIN media m ON f.media_id = m.id
-                    WHERE f.hash IN ({placeholders})""",
-                chunk,
+                    WHERE f.hash IN ({placeholders}){mid_clause}""",
+                params,
             )
             results.extend(cur.fetchall())
         return results
@@ -525,6 +548,47 @@ class FingerprintDB:
         cur = self.conn.cursor()
         cur.execute("SELECT hash FROM fingerprints WHERE media_id=?", (media_id,))
         return [r["hash"] for r in cur.fetchall()]
+
+    def media_ids_for_episodes(
+            self, episodes: Iterable[Tuple[Optional[str], Optional[int], Optional[int]]],
+    ) -> List[int]:
+        """Resolve (title, season, episode) keys to *all* matching media ids.
+
+        The same episode is often stored under more than one ``media`` row — e.g.
+        a subtitle row (which carries the phonetic fingerprints) and a separate
+        media-file row (which carries the acoustic segments). The two-stage
+        hybrid workflow shortlists candidates acoustically (media-file rows) but
+        must then run phonetic matching against the subtitle rows for the *same*
+        episode. This method bridges the two by matching on the episode identity
+        (title + season + episode) rather than the raw media id, so scoping works
+        regardless of which row type produced the candidate.
+        """
+        keys = list(episodes)
+        if not keys:
+            return []
+        cur = self.conn.cursor()
+        found: List[int] = []
+        seen = set()
+        for title, season, episode in keys:
+            clauses = []
+            params: List = []
+            if title is not None:
+                clauses.append("title = ?")
+                params.append(title)
+            # season / episode may legitimately be NULL (movies); match with IS
+            clauses.append("season IS ?" if season is None else "season = ?")
+            if season is not None:
+                params.append(season)
+            clauses.append("episode IS ?" if episode is None else "episode = ?")
+            if episode is not None:
+                params.append(episode)
+            cur.execute(
+                f"SELECT id FROM media WHERE {' AND '.join(clauses)}", params)
+            for r in cur.fetchall():
+                if r["id"] not in seen:
+                    seen.add(r["id"])
+                    found.append(r["id"])
+        return found
 
     def stats(self) -> Dict[str, int]:
         cur = self.conn.cursor()
