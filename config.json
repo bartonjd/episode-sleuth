@@ -1,0 +1,45 @@
+{
+  "fingerprint": {
+    "shingle_sizes": [3, 4, 5],
+    "min_word_length": 2,
+    "metaphone_primary_only": false,
+    "drop_stopwords": false,
+    "hash_algorithm": "md5",
+    "hash_length": 16
+  },
+  "database": {
+    "path": "fingerprints.db"
+  },
+  "matching": {
+    "confidence_threshold": 0.15,
+    "time_window_seconds": 30,
+    "min_matches": 3,
+    "fuzzy_edit_distance": 1,
+    "enable_fuzzy": true,
+    "top_n_results": 5
+  },
+  "audio": {
+    "sample_rate": 16000,
+    "chunk_seconds": 8,
+    "overlap_seconds": 2,
+    "energy_threshold": 300
+  },
+  "stt": {
+    "engine": "vosk",
+    "vosk_model_path": "models/vosk-model-small-en-us-0.15",
+    "google_language": "en-US"
+  },
+  "opensubtitles": {
+    "provider": "auto",
+    "api_key": "",
+    "username": "",
+    "password": "",
+    "api_url": "https://api.opensubtitles.com/api/v1",
+    "rest_api_url": "https://rest.opensubtitles.org/search",
+    "user_agent": "PhoneticFingerprint v1.0",
+    "download_dir": "downloads"
+  },
+  "logging": {
+    "level": "INFO"
+  }
+}

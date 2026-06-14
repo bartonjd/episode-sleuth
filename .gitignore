@@ -1,0 +1,20 @@
+# Fingerprint database (generated)
+*.db
+*.sqlite
+
+# Downloaded subtitles
+downloads/
+
+# Vosk STT models (large; download separately per README)
+models/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+*.swp

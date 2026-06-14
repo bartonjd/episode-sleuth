@@ -1,0 +1,20 @@
+# Core phonetic fingerprinting
+metaphone>=0.6
+python-Levenshtein>=0.21
+
+# Subtitle parsing
+pysrt>=1.1.2
+webvtt-py>=0.4.6
+
+# OpenSubtitles download
+requests>=2.28
+
+# Speech-to-text
+vosk>=0.3.45              # offline STT (recommended) - requires a model download
+SpeechRecognition>=3.10  # optional online Google Web Speech engine
+
+# Audio handling (requires system ffmpeg)
+pydub>=0.25.1
+
+# Live microphone capture (only needed for identify_audio.py live mode)
+# pyaudio>=0.2.13        # install separately; needs system portaudio19-dev
