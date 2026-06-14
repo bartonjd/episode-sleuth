@@ -570,18 +570,20 @@ class FingerprintDB:
         found: List[int] = []
         seen = set()
         for title, season, episode in keys:
-            clauses = []
+            clauses: List[str] = []
             params: List = []
-            if title is not None:
-                clauses.append("title = ?")
-                params.append(title)
-            # season / episode may legitimately be NULL (movies); match with IS
-            clauses.append("season IS ?" if season is None else "season = ?")
-            if season is not None:
-                params.append(season)
-            clauses.append("episode IS ?" if episode is None else "episode = ?")
-            if episode is not None:
-                params.append(episode)
+            # For each field, a NULL value must use the SQL `IS NULL` literal
+            # (which takes NO bind parameter); a non-NULL value uses `= ?` with
+            # exactly one bind parameter. Mixing `IS ?` with a NULL python value
+            # is the source of the original "Incorrect number of bindings" crash:
+            # `IS ?` keeps a placeholder but no parameter was appended for it.
+            for col, val in (("title", title), ("season", season),
+                             ("episode", episode)):
+                if val is None:
+                    clauses.append(f"{col} IS NULL")
+                else:
+                    clauses.append(f"{col} = ?")
+                    params.append(val)
             cur.execute(
                 f"SELECT id FROM media WHERE {' AND '.join(clauses)}", params)
             for r in cur.fetchall():
