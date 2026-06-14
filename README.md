@@ -55,16 +55,22 @@ ACOUSTIC:  audio ──▶ ffmpeg slice ──▶ fpcalc (Chromaprint) ──▶
 
 ## Acoustic fingerprinting — setup & usage
 
-The acoustic engine needs the `fpcalc` tool from Chromaprint plus the
-`pyacoustid` Python package:
+The acoustic engine calls the `fpcalc` command-line tool from Chromaprint
+**directly** — there is no Python `chromaprint`/`pyacoustid` binding to install,
+so it works on Windows as soon as `fpcalc.exe` is present.
 
 ```bash
-# system tool (Debian/Ubuntu)
-sudo apt-get install libchromaprint-tools     # provides 'fpcalc'
-# macOS:  brew install chromaprint
+# system tool only — no Python package needed
+sudo apt-get install libchromaprint-tools     # Debian/Ubuntu (provides 'fpcalc')
+# macOS:    brew install chromaprint
+# Windows:  see INSTALL_WINDOWS.md (or run install_chromaprint.ps1)
+```
 
-# python package
-pip install pyacoustid
+If `fpcalc` is installed somewhere not on your `PATH`, point the project at it
+via `config.json`:
+
+```json
+"acoustic": { "fpcalc_path": "C:\\Tools\\chromaprint\\fpcalc.exe" }
 ```
 
 ### Build an acoustic database

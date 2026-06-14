@@ -28,15 +28,38 @@ to the phonetic matcher's "fraction of shingles matched".
 """
 
 import os
+import json
+import wave
 import logging
+import tempfile
 import subprocess
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict
-
-import acoustid
-import chromaprint
+from typing import List, Tuple, Optional, Dict, Iterable
 
 from fingerprint_core import FingerprintDB, MediaInfo
+
+
+class FpcalcNotFoundError(RuntimeError):
+    """Raised when the Chromaprint ``fpcalc`` executable cannot be run.
+
+    The message includes platform-specific install hints so the failure is
+    actionable for the user (especially on Windows, where the Python
+    ``chromaprint`` bindings are usually unavailable and only ``fpcalc.exe``
+    is installed).
+    """
+
+
+_FPCALC_INSTALL_HINT = (
+    "fpcalc is part of Chromaprint and is required for acoustic fingerprinting.\n"
+    "  - Windows:        see INSTALL_WINDOWS.md (or run install_chromaprint.ps1)\n"
+    "  - Debian/Ubuntu:  sudo apt-get install libchromaprint-tools\n"
+    "  - macOS (brew):   brew install chromaprint\n"
+    "If fpcalc is installed in a non-standard location, set "
+    "\"acoustic\": {\"fpcalc_path\": \"...\"} in config.json."
+)
+
+# Cache of fpcalc paths we have already verified, so we only probe once.
+_FPCALC_OK: Dict[str, bool] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -95,13 +118,90 @@ class AcousticMatchResult:
 
 
 # ---------------------------------------------------------------------------
-# Fingerprint generation (Chromaprint via fpcalc / pyacoustid)
+# Fingerprint generation (Chromaprint via the fpcalc command-line tool)
 # ---------------------------------------------------------------------------
+#
+# We invoke the `fpcalc` binary directly instead of the Python `chromaprint`
+# bindings. The bindings are frequently missing on Windows (and raise
+# "module 'chromaprint' has no attribute 'Fingerprinter'"), whereas fpcalc.exe
+# is a single self-contained download. We use `-raw -json`, which prints
+#     {"duration": <seconds>, "fingerprint": [<uint32>, <uint32>, ...]}
+# so no separate decode step is needed.
 
+def check_fpcalc(fpcalc_path: str = "fpcalc") -> str:
+    """Verify that the fpcalc executable can be run; return its path.
+
+    Raises :class:`FpcalcNotFoundError` with actionable install instructions if
+    fpcalc is missing or cannot be executed. The result is cached per path so
+    repeated calls are cheap.
+    """
+    if _FPCALC_OK.get(fpcalc_path):
+        return fpcalc_path
+    try:
+        subprocess.run([fpcalc_path, "-version"],
+                       capture_output=True, text=True, timeout=30)
+    except FileNotFoundError:
+        raise FpcalcNotFoundError(
+            f"Could not find the 'fpcalc' tool (looked for: {fpcalc_path!r}).\n"
+            + _FPCALC_INSTALL_HINT
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise FpcalcNotFoundError(
+            f"The 'fpcalc' tool ({fpcalc_path!r}) could not be run: {exc}\n"
+            + _FPCALC_INSTALL_HINT
+        )
+    _FPCALC_OK[fpcalc_path] = True
+    return fpcalc_path
+
+
+# Backwards-compatible alias (older callers may import this name).
 def _ensure_fpcalc(fpcalc_path: str) -> None:
-    """Point pyacoustid at the configured fpcalc binary."""
-    if fpcalc_path and fpcalc_path != "fpcalc":
-        os.environ[acoustid.FPCALC_ENVVAR] = fpcalc_path
+    check_fpcalc(fpcalc_path)
+
+
+def _run_fpcalc_raw(path: str, fpcalc_path: str = "fpcalc",
+                    length: Optional[int] = None) -> Tuple[float, List[int]]:
+    """Run ``fpcalc -raw -json`` on a file and parse the result.
+
+    Returns ``(duration_seconds, [raw_uint32_frames])``.
+
+    NOTE: fpcalc often exits with a non-zero status even on success (it emits a
+    harmless "Error decoding audio frame (End of file)" warning at EOF), so we
+    judge success by whether valid JSON with a fingerprint was produced on
+    stdout rather than by the return code.
+    """
+    cmd = [fpcalc_path, "-raw", "-json"]
+    if length:
+        cmd += ["-length", str(int(length))]
+    cmd.append(path)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except FileNotFoundError:
+        raise FpcalcNotFoundError(
+            f"Could not find the 'fpcalc' tool (looked for: {fpcalc_path!r}).\n"
+            + _FPCALC_INSTALL_HINT
+        )
+
+    out = (proc.stdout or "").strip()
+    if not out:
+        err = (proc.stderr or "").strip()
+        raise RuntimeError(
+            f"fpcalc produced no output for {path!r} (exit {proc.returncode}): "
+            f"{err[:200] or 'no stderr'}"
+        )
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Could not parse fpcalc JSON for {path!r}: {exc}; "
+            f"output starts with {out[:120]!r}"
+        )
+
+    raw = data.get("fingerprint") or []
+    duration = float(data.get("duration") or 0.0)
+    # fpcalc already emits unsigned 32-bit values; mask defensively so every
+    # value fits the uint32 storage/index format.
+    return duration, [int(x) & 0xFFFFFFFF for x in raw]
 
 
 def generate_fingerprint(path: str, fpcalc_path: str = "fpcalc",
@@ -111,13 +211,8 @@ def generate_fingerprint(path: str, fpcalc_path: str = "fpcalc",
     `length` (seconds) optionally limits how much audio is analysed.
     Works on any format ffmpeg/Chromaprint can read (mp4, mkv, mp3, wav, ...).
     """
-    _ensure_fpcalc(fpcalc_path)
-    kwargs = {}
-    if length:
-        kwargs["maxlength"] = length
-    duration, encoded = acoustid.fingerprint_file(path, **kwargs)
-    raw, _algo = chromaprint.decode_fingerprint(encoded)
-    return duration, list(raw)
+    check_fpcalc(fpcalc_path)
+    return _run_fpcalc_raw(path, fpcalc_path, length)
 
 
 def generate_segment_fingerprints(
@@ -131,9 +226,7 @@ def generate_segment_fingerprints(
     fingerprints. Slicing keeps per-segment timestamps so matches can report a
     location within the source.
     """
-    import tempfile
-
-    _ensure_fpcalc(ac_cfg.fpcalc_path)
+    check_fpcalc(ac_cfg.fpcalc_path)
     total = _probe_duration(path)
     if total <= 0:
         # fall back to a single whole-file fingerprint
@@ -156,13 +249,14 @@ def generate_segment_fingerprints(
             ok = _ffmpeg_extract(path, pos, length, wav)
             if ok:
                 try:
-                    _, encoded = acoustid.fingerprint_file(wav)
-                    raw, _algo = chromaprint.decode_fingerprint(encoded)
+                    _, raw = _run_fpcalc_raw(wav, ac_cfg.fpcalc_path)
                     if raw:
                         segments.append(
-                            (int(pos * 1000), int((pos + length) * 1000), list(raw))
+                            (int(pos * 1000), int((pos + length) * 1000), raw)
                         )
-                except acoustid.FingerprintGenerationError as exc:
+                except FpcalcNotFoundError:
+                    raise
+                except Exception as exc:
                     logging.warning("fingerprint failed for segment @%.0fs: %s", pos, exc)
                 finally:
                     if os.path.exists(wav):
@@ -376,22 +470,36 @@ def match_acoustic_pcm(pcm_bytes: bytes, sample_rate: int, channels: int,
                        db: FingerprintDB, ac_cfg: AcousticConfig,
                        top_n: int = 5) -> List[AcousticMatchResult]:
     """Match raw PCM (e.g. from a live microphone window) against the DB."""
-    _ensure_fpcalc(ac_cfg.fpcalc_path)
+    check_fpcalc(ac_cfg.fpcalc_path)
     try:
-        encoded, _dur = _fingerprint_pcm(pcm_bytes, sample_rate, channels)
-        raw, _algo = chromaprint.decode_fingerprint(encoded)
+        raw = _fingerprint_pcm(pcm_bytes, sample_rate, channels,
+                               ac_cfg.fpcalc_path)
+    except FpcalcNotFoundError:
+        raise
     except Exception as exc:
         logging.debug("acoustic PCM fingerprint failed: %s", exc)
         return []
-    return match_acoustic(list(raw), db, ac_cfg, top_n)
+    return match_acoustic(raw, db, ac_cfg, top_n)
 
 
-def _fingerprint_pcm(pcm_bytes: bytes, sample_rate: int, channels: int):
-    """Fingerprint raw 16-bit PCM using pyacoustid (Chromaprint).
+def _fingerprint_pcm(pcm_bytes: bytes, sample_rate: int, channels: int,
+                     fpcalc_path: str = "fpcalc") -> List[int]:
+    """Fingerprint raw 16-bit PCM by writing a temporary WAV for fpcalc.
 
-    `acoustid.fingerprint` takes an iterable of PCM byte blocks and returns the
-    encoded fingerprint bytes.
+    fpcalc reads files, not stdin PCM, so we wrap the PCM samples in a minimal
+    WAV container (16-bit little-endian, matching pydub/PyAudio paInt16) and run
+    fpcalc on it. Returns the list of raw uint32 frames.
     """
-    encoded = acoustid.fingerprint(sample_rate, channels, iter([pcm_bytes]))
-    duration = len(pcm_bytes) / (2 * channels * sample_rate)
-    return encoded, duration
+    fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="acpcm_")
+    os.close(fd)
+    try:
+        with wave.open(wav_path, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(2)            # 16-bit PCM
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm_bytes)
+        _duration, raw = _run_fpcalc_raw(wav_path, fpcalc_path)
+        return raw
+    finally:
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
