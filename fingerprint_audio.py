@@ -22,6 +22,14 @@ Examples
 
   # Just transcribe + identify against the existing DB (don't store)
   python fingerprint_audio.py --file clip.wav --identify
+
+  # Re-process files even if already in the database
+  python fingerprint_audio.py --dir /media/matlock --force
+
+Note
+----
+Files already fingerprinted (for the selected method) are skipped automatically,
+matched by their source file path. Pass --force to re-process them anyway.
 """
 
 import os
@@ -249,6 +257,10 @@ def main(argv=None):
     parser.add_argument("--season", type=int)
     parser.add_argument("--episode", type=int)
     parser.add_argument("--type", choices=["tv", "movie"])
+    parser.add_argument("--force", action="store_true",
+                        help="Re-process files even if they are already in the "
+                             "database. By default, files already fingerprinted "
+                             "(for the selected method) are skipped automatically.")
     parser.add_argument("--config")
     parser.add_argument("--db")
     args = parser.parse_args(argv)
@@ -304,7 +316,20 @@ def main(argv=None):
         else:
             grand = 0
             ac_total = 0
+            processed = skipped = 0
             for i, f in enumerate(files, 1):
+                # A file counts as "already processed" only when every selected
+                # method already has fingerprints for it.
+                done_phon = db.file_has_phonetic(f) if use_phonetic else True
+                done_ac = db.file_has_acoustic(f) if use_acoustic else True
+                already = done_phon and done_ac
+                if already and not args.force:
+                    logging.info("Skipping already processed file: %s",
+                                 os.path.basename(f))
+                    skipped += 1
+                    continue
+                if already and args.force:
+                    logging.info("Re-processing file: %s", os.path.basename(f))
                 logging.info("[%d/%d] %s", i, len(files), os.path.basename(f))
                 if use_phonetic:
                     grand += fingerprint_audio_file(
@@ -314,12 +339,14 @@ def main(argv=None):
                     ac_total += store_acoustic_file(
                         f, db, ac_cfg,
                         args.title, args.year, args.season, args.episode, args.type)
+                processed += 1
             msg = []
             if use_phonetic:
                 msg.append(f"{grand} phonetic fingerprints")
             if use_acoustic:
                 msg.append(f"{ac_total} acoustic segments")
             print("\nDone. Added %s. Stats: %s" % (" + ".join(msg), db.stats()))
+            print(f"Processed {processed} new files, skipped {skipped} existing files")
         return 0
     finally:
         db.close()

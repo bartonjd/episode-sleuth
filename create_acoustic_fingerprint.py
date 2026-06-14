@@ -23,6 +23,14 @@ Examples
 
   # List media that have acoustic fingerprints
   python create_acoustic_fingerprint.py --list
+
+  # Re-process files even if already in the database
+  python create_acoustic_fingerprint.py --dir /media/matlock --force
+
+Note
+----
+Files that already have acoustic fingerprints are skipped automatically (matched
+by their source file path). Pass --force to re-process them anyway.
 """
 
 import os
@@ -95,6 +103,10 @@ def main(argv=None):
     parser.add_argument("--season", type=int)
     parser.add_argument("--episode", type=int)
     parser.add_argument("--type", choices=["tv", "movie"])
+    parser.add_argument("--force", action="store_true",
+                        help="Re-process files even if they already have acoustic "
+                             "fingerprints. By default, files already in the "
+                             "database are skipped automatically.")
     parser.add_argument("--config")
     parser.add_argument("--db")
     args = parser.parse_args(argv)
@@ -147,13 +159,22 @@ def main(argv=None):
                 identify_one(f, db, ac_cfg, threshold)
             return 0
 
-        grand = 0
+        grand = processed = skipped = 0
         for i, f in enumerate(files, 1):
+            already = af.file_already_acoustic_fingerprinted(db, f)
+            if already and not args.force:
+                logging.info("Skipping already processed file: %s", os.path.basename(f))
+                skipped += 1
+                continue
+            if already and args.force:
+                logging.info("Re-processing file: %s", os.path.basename(f))
             logging.info("[%d/%d] %s", i, len(files), os.path.basename(f))
             grand += fingerprint_one(f, db, ac_cfg, args.title, args.year,
                                      args.season, args.episode, args.type)
+            processed += 1
         print("\n" + "=" * 56)
         print(f"Done. Stored acoustic fingerprints for {grand} segment(s).")
+        print(f"Processed {processed} new files, skipped {skipped} existing files")
         print("Database stats:", db.stats())
         print(f"Database: {db_path}")
         return 0

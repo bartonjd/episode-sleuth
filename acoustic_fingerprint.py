@@ -330,6 +330,15 @@ def store_acoustic_fingerprints(db: FingerprintDB, info: MediaInfo, path: str,
     return len(segments)
 
 
+def file_already_acoustic_fingerprinted(db: FingerprintDB, path: str) -> bool:
+    """Return True if `path` already has acoustic fingerprints in the DB.
+
+    Used for smart-skip: media is keyed by its source file path, so we look up
+    whether any acoustic segments exist for that path.
+    """
+    return db.file_has_acoustic(path)
+
+
 # ---------------------------------------------------------------------------
 # Matching
 # ---------------------------------------------------------------------------

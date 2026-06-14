@@ -368,6 +368,48 @@ class FingerprintDB:
         self.conn.commit()
 
     # ------------------------------------------------------------------
+    # Smart-skip helpers: has this file already been fingerprinted?
+    # ------------------------------------------------------------------
+
+    def file_has_phonetic(self, source: str) -> bool:
+        """Return True if a media row with this `source` (file path) already has
+        at least one phonetic fingerprint row."""
+        if not source:
+            return False
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT 1 FROM fingerprints f
+               JOIN media m ON m.id = f.media_id
+               WHERE m.source = ? LIMIT 1""",
+            (source,),
+        )
+        return cur.fetchone() is not None
+
+    def file_has_acoustic(self, source: str) -> bool:
+        """Return True if a media row with this `source` (file path) already has
+        at least one acoustic segment row."""
+        if not source:
+            return False
+        cur = self.conn.cursor()
+        cur.execute(
+            """SELECT 1 FROM acoustic_segments s
+               JOIN media m ON m.id = s.media_id
+               WHERE m.source = ? LIMIT 1""",
+            (source,),
+        )
+        return cur.fetchone() is not None
+
+    def file_already_fingerprinted(self, source: str, acoustic: bool = False) -> bool:
+        """Convenience wrapper: check whether `source` already has fingerprints.
+
+        When ``acoustic`` is False (default) the phonetic ``fingerprints`` table
+        is checked; when True the ``acoustic_segments`` table is checked.
+        """
+        if acoustic:
+            return self.file_has_acoustic(source)
+        return self.file_has_phonetic(source)
+
+    # ------------------------------------------------------------------
     # Acoustic (Chromaprint) storage & lookup
     # ------------------------------------------------------------------
 
