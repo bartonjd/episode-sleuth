@@ -709,6 +709,30 @@ class FingerprintDB:
         cur.execute("SELECT * FROM media ORDER BY title, season, episode")
         return cur.fetchall()
 
+    def count_fingerprints(self, media_ids: Optional[Iterable[int]] = None) -> int:
+        """Number of phonetic fingerprint rows, optionally scoped to media_ids.
+
+        Used by the hybrid identifier's verbose logging to quantify how much the
+        acoustic shortlist shrinks the phonetic search space (scoped rows vs the
+        whole fingerprint table)."""
+        cur = self.conn.cursor()
+        if media_ids is None:
+            cur.execute("SELECT COUNT(*) AS c FROM fingerprints")
+            return cur.fetchone()["c"]
+        ids = list({int(m) for m in media_ids})
+        if not ids:
+            return 0
+        total = 0
+        CHUNK = 400
+        for i in range(0, len(ids), CHUNK):
+            chunk = ids[i:i + CHUNK]
+            ph = ",".join("?" * len(chunk))
+            cur.execute(
+                f"SELECT COUNT(*) AS c FROM fingerprints WHERE media_id IN ({ph})",
+                chunk)
+            total += cur.fetchone()["c"]
+        return total
+
     def close(self) -> None:
         self.conn.close()
 

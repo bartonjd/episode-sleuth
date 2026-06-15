@@ -435,6 +435,14 @@ def identify_hybrid_file(path, db, fp_cfg, ac_cfg, transcriber, cfg):
     episode_keys = [(r.media.title, r.media.season, r.media.episode)
                     for r in ac_results]
     candidate_ids = db.media_ids_for_episodes(episode_keys) if episode_keys else []
+
+    # Quantify how much the shortlist shrinks the phonetic search space so the
+    # "much faster than scanning everything" claim is visible, not just asserted.
+    total_media = db.stats().get("media", 0)
+    total_fp = db.count_fingerprints()
+    scoped_fp = db.count_fingerprints(candidate_ids) if candidate_ids else total_fp
+    reduction = (1 - scoped_fp / total_fp) * 100 if total_fp else 0.0
+
     print(f"\n[Stage 1] Acoustic shortlist  ({t_ac:.2f}s)  "
           f"-> {len(ac_results)} candidate episode(s) "
           f"({len(candidate_ids)} media row(s) to confirm):")
@@ -442,6 +450,11 @@ def identify_hybrid_file(path, db, fp_cfg, ac_cfg, transcriber, cfg):
         for i, r in enumerate(ac_results, 1):
             print(f"    {i}. {r.media.label():38} "
                   f"acoustic={r.confidence:5.1%}")
+        logging.info("Stage 1 done: %d/%d episodes shortlisted; phonetic search "
+                     "space %d -> %d fingerprints (%.1f%% smaller)",
+                     len(ac_results), total_media, total_fp, scoped_fp, reduction)
+        print(f"    => phonetic search scoped to {scoped_fp:,} of {total_fp:,} "
+              f"fingerprints ({reduction:.1f}% smaller search space)")
     else:
         print("    (none - acoustic produced no candidates; "
               "phonetic will search the full database)")
@@ -456,9 +469,16 @@ def identify_hybrid_file(path, db, fp_cfg, ac_cfg, transcriber, cfg):
         cues = transcribe_file(path, transcriber, cfg)
         text = " ".join(t for (_a, _b, t) in cues)
         if text.strip():
+            snippet = text[:120] + ("..." if len(text) > 120 else "")
+            logging.info("  transcribed %d chars of speech: \"%s\"",
+                         len(text), snippet)
             query_hashes = [h for (h, _s) in fingerprint_text(text, fp_cfg)]
             # scope phonetic search to acoustic candidates (None => full DB)
             scope = candidate_ids if candidate_ids else None
+            logging.info("  exact phonetic match: %d query shingles vs %s ...",
+                         len(query_hashes),
+                         f"{len(scope)} scoped episode(s)" if scope
+                         else "FULL database")
             rows = db.lookup(query_hashes, media_ids=scope)
             phon_results = score_matches(query_hashes, rows, cfg.get("matching", {}))
             if not phon_results and scope is not None:

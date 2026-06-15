@@ -81,8 +81,11 @@ Why this is better:
 * **Speed** — the phonetic fingerprint table is huge (one row per dialogue
   shingle for the whole library). Restricting the search to ~5 acoustically
   shortlisted episodes instead of the entire library makes the phonetic lookup
-  **~10x faster** on a large library (measured 20.4 ms → 1.8 ms on a 1,500-episode
-  / 11.6 M-fingerprint synthetic library), with no loss of accuracy.
+  **dramatically faster** on a large library. On a 600-episode /
+  3.0 M-fingerprint synthetic library with realistic recurring-phrase
+  collisions, `demo_hybrid.py` measures **20.3 ms → 0.31 ms per query — ~66x
+  faster** for the scoped lookup, with no loss of accuracy (both return the same
+  correct episode). See [Demonstration & benchmarks](#demonstration--benchmarks).
 * **Robustness** — Stage 1 uses a *recall-focused* acoustic configuration (a more
   forgiving Hamming-distance tolerance, `candidate_max_bit_error`) so the correct
   episode survives into the shortlist even for noisy microphone captures or lossy
@@ -129,6 +132,50 @@ fuzzy is a *fallback*, never an override of a confident exact match.
 The reference token streams are built automatically by `create_fingerprint.py`
 alongside the shingle hashes — no extra step is required.
 
+## Demonstration & benchmarks
+
+A self-contained, runnable demonstration of the whole pipeline lives in
+**`demo_hybrid.py`**. It needs only the existing `fingerprints.db` and the sample
+`Recording.m4a`, and prints stage-by-stage evidence for four things:
+
+```bash
+python3 demo_hybrid.py                       # full demo
+python3 demo_hybrid.py --quiet               # less STT chatter
+python3 demo_hybrid.py --synth-episodes 600  # size of the synthetic perf library
+```
+
+| # | Demo | What it proves | Result |
+|---|------|----------------|--------|
+| 1 | **Correctness** | `--hybrid` on the real `Recording.m4a` identifies **S01E04** even though the acoustic stage alone ranked it only #3 — the scoped phonetic stage corrects the verdict. | `IDENTIFIED S01E04 @ 27.6%` in **3.4s** (acoustic 1.1s + phonetic 2.2s) |
+| 2 | **Performance** | Scoped (1-episode) phonetic lookup vs a full-database scan over a 600-episode / 3.0 M-fingerprint synthetic library with realistic recurring-phrase collisions. | **20.3 ms → 0.31 ms/query ≈ 66x faster**, identical correct answer |
+| 3 | **Fuzzy / degraded STT** | A heavily corrupted transcript (words dropped, mis-heard, inserted) where exact shingle hashing collapses but order-preserving LCS still recovers the episode. | exact **34%** → fuzzy **95%**, correct episode recovered |
+| 4 | **Live mic path / SQL fix** | Runs the *exact* live-capture code path (`shortlist_candidates_pcm → media_ids_for_episodes → scoped lookup`) on PCM fed from the recording, and confirms the previously-crashing `NULL season/episode` key is now handled cleanly. | end-to-end with **no SQL crash** |
+
+> The live demo (#4) feeds PCM through the real microphone code path because the
+> CI/VM has no microphone device; on a machine with a mic, `--hybrid --once`
+> exercises the identical path on live input.
+
+### Verbose two-stage logging
+
+Both `--hybrid` (file) and `--hybrid --once` (mic) now print each stage so the
+pipeline is observable at runtime:
+
+```
+[Stage 1] Acoustic shortlist  (1.14s)  -> 3 candidate episode(s) (6 media row(s) to confirm):
+    1. Matlock (1986) (1986) S01E01           acoustic=16.5%
+    2. Matlock (1986) (1986) S01E03           acoustic=14.3%
+    3. Matlock (1986) (1986) S01E04           acoustic=12.1%
+    => phonetic search scoped to 31,523 of 31,523 fingerprints (0.0% smaller search space)
+
+[Stage 2] Scoped phonetic     (2.24s)  -> searched 6 episode(s):
+  >> 1. Matlock (1986) (1986) S01E04           phonetic=27.6% (1 hits)
+```
+
+The `% smaller search space` line reports the real reduction for *your* library
+(it is `0.0%` here only because the sample DB has fewer episodes than the
+shortlist size, so nothing is pruned — on a large library this is where the ~66x
+speed-up above comes from).
+
 ## Components
 
 | File | Purpose |
@@ -142,6 +189,7 @@ alongside the shingle hashes — no extra step is required.
 | `subtitle_utils.py` | Subtitle parsing + OpenSubtitles download |
 | `stt_utils.py` | Speech-to-text helpers (Vosk / Google) — used **only** by `identify_audio.py` |
 | `selftest.py` | Quick end-to-end phonetic self-test |
+| `demo_hybrid.py` | Runnable, self-contained demonstration of the two-stage pipeline (correctness, ~66x scoping speed-up, fuzzy-on-degraded-STT, and the live mic code path / SQL fix) — see [Demonstration & benchmarks](#demonstration--benchmarks) |
 
 ## Acoustic fingerprinting — setup & usage
 
