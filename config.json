@@ -56,8 +56,10 @@
   "hybrid": {
     "top_candidates_count": 5,
     "acoustic_shortlist_threshold": 0.0,
-    "phonetic_confirm_threshold": 0.15
+    "phonetic_confirm_threshold": 0.15,
+    "acoustic_shortlist_reliable": 0.15
   },
+  "_dvd_comment": "identify_dvd_episodes.py (batch DVD-rip identification) reuses the acoustic + matching + hybrid settings. 'acoustic_shortlist_reliable' is the minimum acoustic confidence for the shortlist to be trusted when scoping the phonetic fallback; below it, the phonetic fallback widens to the whole database so a wrong low-confidence acoustic top-1 cannot poison the result.",
   "opensubtitles": {
     "provider": "auto",
     "api_key": "c0OzS5ibu6XHtmWGJW1QyBY9MyESAhVf",

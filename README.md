@@ -190,6 +190,7 @@ speed-up above comes from).
 | `stt_utils.py` | Speech-to-text helpers (Vosk / Google) — used **only** by `identify_audio.py` |
 | `selftest.py` | Quick end-to-end phonetic self-test |
 | `demo_hybrid.py` | Runnable, self-contained demonstration of the two-stage pipeline (correctness, ~66x scoping speed-up, fuzzy-on-degraded-STT, and the live mic code path / SQL fix) — see [Demonstration & benchmarks](#demonstration--benchmarks) |
+| `identify_dvd_episodes.py` | **Focused batch tool** for the common real use case: name a folder of DVD-ripped episodes for Plex. Multi-point acoustic sampling + voting, phonetic fallback, runtime sanity check, CSV/JSON output with manual-review flags. See **[USAGE_DVD.md](USAGE_DVD.md)**. |
 
 ## Acoustic fingerprinting — setup & usage
 
