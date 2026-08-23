@@ -191,6 +191,41 @@ speed-up above comes from).
 | `selftest.py` | Quick end-to-end phonetic self-test |
 | `demo_hybrid.py` | Runnable, self-contained demonstration of the two-stage pipeline (correctness, ~66x scoping speed-up, fuzzy-on-degraded-STT, and the live mic code path / SQL fix) — see [Demonstration & benchmarks](#demonstration--benchmarks) |
 | `identify_dvd_episodes.py` | **Focused batch tool** for the common real use case: name a folder of DVD-ripped episodes for Plex. Multi-point acoustic sampling + voting, phonetic fallback, runtime sanity check, CSV/JSON output with manual-review flags. See **[USAGE_DVD.md](USAGE_DVD.md)**. |
+| `dvd_identifier_gui.py` | **Desktop GUI (Tkinter)** front end for the DVD identifier — point-and-click on Windows. See [Desktop GUI](#desktop-gui-windows) below. |
+| `DVD_Identifier.bat` | Double-click launcher for the GUI on Windows. |
+
+## Desktop GUI (Windows)
+
+Prefer not to use the command line? Run the point-and-click app:
+
+```bash
+python dvd_identifier_gui.py
+```
+
+…or on Windows just **double-click `DVD_Identifier.bat`**.
+
+Tkinter ships with the standard Python installer, so there is nothing extra to
+install for the window itself — you only need the usual runtime dependencies
+(`pip install -r requirements.txt`) plus `ffmpeg` and `fpcalc` (see
+[INSTALL_WINDOWS.md](INSTALL_WINDOWS.md)).
+
+The window has three tabs:
+
+- **Identify** — pick your `fingerprints.db` and a folder (or single file) of
+  DVD rips, tweak samples / sample length / phonetic-fallback / review
+  threshold, then hit **Identify**. Results appear in a table with a colour-coded
+  *needs-review* flag. Buttons let you **Export CSV/JSON** or **Rename for Plex…**
+  (safe: it *copies* confidently-identified TV episodes into a
+  `Show/Season NN/Show - SxxEyy.ext` layout and never touches files flagged for
+  review).
+- **Build library** — grow the reference DB: add subtitle files (`.srt`/`.vtt`)
+  for phonetic matching and/or video/audio files for acoustic matching. It runs
+  the existing `create_fingerprint.py` / `create_acoustic_fingerprint.py` tools
+  and streams their output live.
+- **Log** — the full engine log for the last run, for troubleshooting.
+
+Identification and library builds run on a background thread, so the window
+stays responsive; a progress bar shows activity.
 
 ## Acoustic fingerprinting — setup & usage
 
