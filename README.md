@@ -227,6 +227,66 @@ The window has three tabs:
 Identification and library builds run on a background thread, so the window
 stays responsive; a progress bar shows activity.
 
+### One-click install (Windows)
+
+Instead of installing dependencies by hand, run the setup script - it uses
+`winget` to install everything and creates a Desktop / Start-menu shortcut:
+
+```
+Double-click  install.bat        (simplest)
+```
+
+or from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+What `install.ps1` does (all idempotent - safe to re-run):
+
+| Step | Installed via | Notes |
+|------|---------------|-------|
+| Python 3 | `winget install Python.Python.3.12` | skipped if already present |
+| FFmpeg | `winget install Gyan.FFmpeg` | decodes video/audio |
+| fpcalc (Chromaprint) | `winget install AcoustID.Chromaprint` | the acoustic engine |
+| Python packages | `pip install -r requirements.txt` | into a local `.venv` |
+| Vosk speech model | download + unzip into `models\` | offline STT for phonetic matching |
+| Shortcuts | `WScript.Shell` | Desktop + Start menu, custom icon |
+
+Useful switches: `-NoVenv` (use system Python), `-NoModel` (acoustic-only, skip
+the STT model), `-NoShortcut`, and `-Force` (reinstall packages / re-download
+the model).
+
+### Build a standalone MSIX installer (Windows)
+
+To produce a self-contained `.msix` that installs the app **without needing
+Python on the target machine**:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_msix.ps1 -Version 1.0.0.0
+```
+
+This runs PyInstaller to bundle `dvd_identifier_gui.py` (plus `config.json` and
+the Vosk model) into an app folder, packs it into an `.msix` with
+`packaging\AppxManifest.xml`, and signs it with a **self-signed** certificate.
+`ffmpeg.exe` and `fpcalc.exe` are bundled automatically if they are on `PATH`
+at build time (run `install.ps1` first so both exist).
+
+Build prerequisites (build machine only):
+
+- Python 3 on `PATH` (PyInstaller is installed automatically into `.buildvenv`)
+- Windows 10/11 SDK for `makeappx.exe` + `signtool.exe`:
+  `winget install Microsoft.WindowsSDK.10.0.22621`
+
+Because the package is self-signed, install it by trusting the generated
+certificate once (the script prints the exact commands), then double-click the
+`.msix` or run `Add-AppxPackage -Path .\DVDEpisodeIdentifier_1.0.0.0.msix`. A
+certificate from a real CA would remove the trust step for end users.
+
+Packaging files live in `packaging\` (`AppxManifest.xml`, `make_icons.py`, and
+generated `app.ico` + `assets\`). Regenerate the icons any time with
+`python packaging\make_icons.py`.
+
 ## Acoustic fingerprinting — setup & usage
 
 The acoustic engine calls the `fpcalc` command-line tool from Chromaprint

@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX package manifest for the DVD Episode Identifier.
+
+  NOTE: the Identity/@Publisher value MUST match the subject of the certificate
+  used to sign the package. build_msix.ps1 creates a self-signed certificate with
+  subject "CN=DVDIdentifier" to match the value below. If you sign with your own
+  certificate, change Publisher here to match your cert's subject exactly.
+
+  Placeholders replaced by build_msix.ps1 at pack time:
+    {VERSION}  -> e.g. 1.0.0.0
+-->
+<Package
+    xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+    xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+    xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+    IgnorableNamespaces="uap rescap">
+
+  <Identity
+      Name="Abacus.DVDEpisodeIdentifier"
+      Publisher="CN=DVDIdentifier"
+      Version="{VERSION}"
+      ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>DVD Episode Identifier</DisplayName>
+    <PublisherDisplayName>DVD Identifier</PublisherDisplayName>
+    <Logo>assets\StoreLogo.png</Logo>
+    <Description>Identify DVD-ripped TV episodes by audio and rename them for Plex.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop"
+                        MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="DVDIdentifier"
+                 Executable="dvd_identifier_gui.exe"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+          DisplayName="DVD Episode Identifier"
+          Description="Identify DVD-ripped TV episodes by audio and rename them for Plex."
+          BackgroundColor="#182136"
+          Square150x150Logo="assets\Square150x150Logo.png"
+          Square44x44Logo="assets\Square44x44Logo.png">
+        <uap:DefaultTile
+            Wide310x150Logo="assets\Wide310x150Logo.png"
+            ShortName="DVD ID">
+          <uap:ShowNameOnTiles>
+            <uap:ShowOn Tile="square150x150Logo" />
+            <uap:ShowOn Tile="wide310x150Logo" />
+          </uap:ShowNameOnTiles>
+        </uap:DefaultTile>
+        <uap:SplashScreen Image="assets\SplashScreen.png" BackgroundColor="#182136" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+</Package>
