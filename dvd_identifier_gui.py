@@ -98,6 +98,8 @@ class DvdIdentifierGUI(tk.Tk):
         self.results: List[FileResult] = []
         self._worker: Optional[threading.Thread] = None
         self._cancel_flag = threading.Event()  # set to True to cancel worker
+        self._checked_items: set = set()  # Track which tree items are checked for rename
+        self._item_to_result: dict = {}  # Map tree item ID to result index
 
         # shared state vars
         self.db_var = tk.StringVar(value=DEFAULT_DB if os.path.exists(DEFAULT_DB) else "")
@@ -228,24 +230,30 @@ class DvdIdentifierGUI(tk.Tk):
         ttk.Button(act, text="Rename for Plex...", command=self._rename_plex).pack(side="right", padx=(0, 6))
 
         # --- results table ---
-        cols = ("file", "episode", "title", "confidence", "method", "agreement", "review", "notes")
-        tv = ttk.Treeview(f, columns=cols, show="headings", height=12)
+        cols = ("rename", "status", "file", "episode", "title", "confidence", "method", "notes")
+        tv = ttk.Treeview(f, columns=cols, show="tree headings", height=12)
+        tv.column("#0", width=0, stretch=False)  # Hide tree column
         headings = {
+            "rename": ("✓", 30), "status": ("", 30),
             "file": ("File", 220), "episode": ("Episode", 80),
             "title": ("Title", 170), "confidence": ("Conf.", 60),
-            "method": ("Method", 80), "agreement": ("Agree", 60),
-            "review": ("Review?", 70), "notes": ("Notes", 180),
+            "method": ("Method", 80), "notes": ("Notes", 180),
         }
         for c, (txt, w) in headings.items():
             tv.heading(c, text=txt)
-            tv.column(c, width=w, anchor="w")
-        tv.tag_configure("review", background="#fff3cd")
-        tv.tag_configure("ok", background="#e7f6e7")
+            tv.column(c, width=w, anchor="w" if c != "rename" else "center")
+        
+        # Visual theming - Apple-like colors
+        tv.tag_configure("high_conf", background="#d4edda", foreground="#155724")  # green
+        tv.tag_configure("medium_conf", background="#fff3cd", foreground="#856404")  # yellow
+        tv.tag_configure("low_conf", background="#f8d7da", foreground="#721c24")  # red
+        
         vsb = ttk.Scrollbar(f, orient="vertical", command=tv.yview)
         tv.configure(yscrollcommand=vsb.set)
         tv.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=(0, 8))
         vsb.pack(side="left", fill="y", pady=(0, 8), padx=(0, 8))
         self.tree = tv
+        self.tree.bind("<Button-1>", self._on_tree_click)
 
     def _build_build_tab(self):
         f = self.tab_build
@@ -338,6 +346,8 @@ class DvdIdentifierGUI(tk.Tk):
         for i in self.tree.get_children():
             self.tree.delete(i)
         self.results = []
+        self._checked_items.clear()
+        self._item_to_result.clear()
 
         # Snapshot ALL Tk variables here, on the main thread. Tk is not
         # thread-safe, so the worker must never touch a tk.Variable directly.
@@ -406,7 +416,8 @@ class DvdIdentifierGUI(tk.Tk):
                     r = identify_one(path, db, fp_cfg, ac_cfg, cfg, args,
                                      transcriber_box, None)
                     results.append(r)
-                    self.ui_q.put(("row", r))
+                    result_idx = len(results) - 1
+                    self.ui_q.put(("row", (r, result_idx)))
                 except FpcalcNotFoundError as exc:
                     self.results = results
                     self._finish_identify(error=f"fpcalc error: {exc}")
@@ -420,14 +431,58 @@ class DvdIdentifierGUI(tk.Tk):
         except Exception as exc:
             self._finish_identify(error=str(exc))
 
-    def _add_result_row(self, r: FileResult):
+    def _add_result_row(self, payload):
+        r, result_idx = payload
         row = r.to_row()
-        tag = "review" if r.needs_review else "ok"
-        self.tree.insert("", "end", tags=(tag,), values=(
+        conf = row["confidence"]
+        
+        # Determine visual tag based on confidence
+        if r.needs_review or conf < 0.35:
+            tag = "low_conf"
+            status_icon = "⚠"  # warning
+        elif conf >= 0.7:
+            tag = "high_conf"
+            status_icon = "✓"  # checkmark
+        else:
+            tag = "medium_conf"
+            status_icon = "◐"  # half-filled circle
+        
+        # Auto-check high confidence items for rename
+        checkbox = "☑" if not r.needs_review and conf >= 0.35 else "☐"
+        
+        item_id = self.tree.insert("", "end", tags=(tag,), values=(
+            checkbox, status_icon,
             row["filename"], row["episode_id"], row["title"],
-            f"{row['confidence']:.0%}", row["method"], row["agreement"],
-            "REVIEW" if r.needs_review else "ok", row["notes"],
+            f"{conf:.0%}", row["method"], row["notes"],
         ))
+        
+        # Track checked state and map tree item to result
+        self._item_to_result[item_id] = result_idx
+        if not r.needs_review and conf >= 0.35:
+            self._checked_items.add(item_id)
+
+    def _on_tree_click(self, event):
+        """Handle clicks on the tree - toggle checkboxes in the rename column."""
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        
+        col = self.tree.identify_column(event.x)
+        item = self.tree.identify_row(event.y)
+        
+        if not item or col != "#1":  # #1 is the first visible column (rename)
+            return
+        
+        # Toggle checkbox
+        values = list(self.tree.item(item, "values"))
+        if values[0] == "☐":
+            values[0] = "☑"
+            self._checked_items.add(item)
+        else:
+            values[0] = "☐"
+            self._checked_items.discard(item)
+        
+        self.tree.item(item, values=values)
 
     def _cancel_operation(self):
         """User clicked Cancel - signal the worker to stop."""
@@ -486,25 +541,41 @@ class DvdIdentifierGUI(tk.Tk):
         if not self.results:
             messagebox.showinfo(APP_TITLE, "Identify some files first.")
             return
-        renamable = [r for r in self.results
-                     if r.guess and not r.needs_review
-                     and r.guess.season is not None and r.guess.episode is not None]
-        skipped = len(self.results) - len(renamable)
-        if not renamable:
-            messagebox.showinfo(APP_TITLE,
-                                "No confidently-identified TV episodes to rename.\n"
-                                "(Files flagged for review are never touched.)")
+        
+        # Get checked items only
+        if not self._checked_items:
+            messagebox.showinfo(APP_TITLE, "No items selected for renaming.\n"
+                                "Check the boxes next to files you want to rename.")
             return
+        
+        # Filter results to only checked items
+        checked_results = []
+        for item_id in self._checked_items:
+            result_idx = self._item_to_result.get(item_id)
+            if result_idx is not None and result_idx < len(self.results):
+                r = self.results[result_idx]
+                if r.guess and r.guess.season is not None and r.guess.episode is not None:
+                    checked_results.append(r)
+        
+        if not checked_results:
+            messagebox.showinfo(APP_TITLE,
+                                "Selected files don't have valid episode information.\n"
+                                "Check different files or review the identification results.")
+            return
+        
         dest = filedialog.askdirectory(
             title="Choose destination folder for renamed copies")
         if not dest:
             return
-        msg = (f"Copy {len(renamable)} identified file(s) into a Plex layout "
-               f"under:\n{dest}\n\n"
-               f"{skipped} file(s) flagged for review will be skipped.\n\n"
+        
+        total_checked = len(self._checked_items)
+        renamable = len(checked_results)
+        msg = (f"Copy {renamable} checked file(s) into a Plex layout under:\n{dest}\n\n"
+               f"({total_checked - renamable} checked items skipped - missing episode info)\n\n"
                "Originals are COPIED, never moved. Continue?")
         if not messagebox.askyesno(APP_TITLE, msg):
             return
+        renamable = checked_results
         done, errors = 0, []
         for r in renamable:
             g = r.guess
