@@ -97,6 +97,7 @@ class DvdIdentifierGUI(tk.Tk):
         self.ui_q: "queue.Queue[tuple]" = queue.Queue()
         self.results: List[FileResult] = []
         self._worker: Optional[threading.Thread] = None
+        self._cancel_flag = threading.Event()  # set to True to cancel worker
 
         # shared state vars
         self.db_var = tk.StringVar(value=DEFAULT_DB if os.path.exists(DEFAULT_DB) else "")
@@ -218,6 +219,8 @@ class DvdIdentifierGUI(tk.Tk):
         act.pack(fill="x", padx=8, pady=(2, 6))
         self.run_btn = ttk.Button(act, text="Identify", command=self._run_identify)
         self.run_btn.pack(side="left")
+        self.cancel_btn = ttk.Button(act, text="Cancel", command=self._cancel_operation, state="disabled")
+        self.cancel_btn.pack(side="left", padx=6)
         self.progress = ttk.Progressbar(act, mode="indeterminate", length=160)
         self.progress.pack(side="left", padx=10)
         ttk.Button(act, text="Export CSV...", command=self._export_csv).pack(side="right")
@@ -328,6 +331,8 @@ class DvdIdentifierGUI(tk.Tk):
             return
 
         self.run_btn.configure(state="disabled")
+        self.cancel_btn.configure(state="normal")
+        self._cancel_flag.clear()
         self.progress.start(12)
         self.status_var.set("Identifying...")
         for i in self.tree.get_children():
@@ -389,6 +394,12 @@ class DvdIdentifierGUI(tk.Tk):
             transcriber_box: dict = {}
             results: List[FileResult] = []
             for i, path in enumerate(media, 1):
+                if self._cancel_flag.is_set():
+                    self.log("Identification cancelled by user.")
+                    db.close()
+                    self.results = results
+                    self._finish_identify(count=len(results), cancelled=True)
+                    return
                 self.ui_q.put(("status",
                                f"Identifying {i}/{len(media)}: {os.path.basename(path)}"))
                 try:
@@ -418,17 +429,28 @@ class DvdIdentifierGUI(tk.Tk):
             "REVIEW" if r.needs_review else "ok", row["notes"],
         ))
 
-    def _finish_identify(self, count: int = 0, error: Optional[str] = None):
+    def _cancel_operation(self):
+        """User clicked Cancel - signal the worker to stop."""
+        if self._worker and self._worker.is_alive():
+            self._cancel_flag.set()
+            self.status_var.set("Cancelling...")
+            self.cancel_btn.configure(state="disabled")
+
+    def _finish_identify(self, count: int = 0, error: Optional[str] = None, cancelled: bool = False):
         # Called from the worker thread -> hand off to the main-thread pump.
-        self.ui_q.put(("identify_done", {"count": count, "error": error}))
+        self.ui_q.put(("identify_done", {"count": count, "error": error, "cancelled": cancelled}))
 
     def _on_identify_done(self, payload: dict):
         """Main-thread completion handler for an identify run."""
         self.progress.stop()
         self.run_btn.configure(state="normal")
+        self.cancel_btn.configure(state="disabled")
         error = payload.get("error")
         count = payload.get("count", 0)
-        if error:
+        cancelled = payload.get("cancelled", False)
+        if cancelled:
+            self.status_var.set("Cancelled.")
+        elif error:
             self.status_var.set("Error.")
             messagebox.showerror(APP_TITLE, error)
         else:
@@ -544,9 +566,12 @@ class DvdIdentifierGUI(tk.Tk):
 
     def _build_worker(self, cmd: List[str]):
         try:
-            proc = subprocess.Popen(cmd, cwd=HERE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, text=True,
-                                    bufsize=1)
+            # Suppress console window on Windows
+            kwargs = {"cwd": HERE, "stdout": subprocess.PIPE,
+                      "stderr": subprocess.STDOUT, "text": True, "bufsize": 1}
+            if sys.platform == "win32":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            proc = subprocess.Popen(cmd, **kwargs)
             for line in proc.stdout:
                 self.ui_q.put(("build", line))
                 self.log(line.rstrip())

@@ -28,6 +28,7 @@ to the phonetic matcher's "fraction of shingles matched".
 """
 
 import os
+import sys
 import json
 import wave
 import logging
@@ -37,6 +38,14 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Iterable
 
 from fingerprint_core import FingerprintDB, MediaInfo
+
+
+# Windows: suppress console windows when calling fpcalc/ffmpeg/ffprobe
+def _subprocess_flags():
+    """Returns creationflags for subprocess calls to suppress console windows on Windows."""
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
 
 
 class FpcalcNotFoundError(RuntimeError):
@@ -173,7 +182,8 @@ def check_fpcalc(fpcalc_path: str = "fpcalc") -> str:
         return fpcalc_path
     try:
         subprocess.run([fpcalc_path, "-version"],
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=30,
+                       **_subprocess_flags())
     except FileNotFoundError:
         raise FpcalcNotFoundError(
             f"Could not find the 'fpcalc' tool (looked for: {fpcalc_path!r}).\n"
@@ -209,7 +219,8 @@ def _run_fpcalc_raw(path: str, fpcalc_path: str = "fpcalc",
         cmd += ["-length", str(int(length))]
     cmd.append(path)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
+                              **_subprocess_flags())
     except FileNotFoundError:
         raise FpcalcNotFoundError(
             f"Could not find the 'fpcalc' tool (looked for: {fpcalc_path!r}).\n"
@@ -314,6 +325,7 @@ def _probe_duration(path: str) -> float:
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
             capture_output=True, text=True, timeout=60,
+            **_subprocess_flags()
         )
         return float(out.stdout.strip())
     except (subprocess.SubprocessError, ValueError):
@@ -328,6 +340,7 @@ def _ffmpeg_extract(path: str, start_s: float, length_s: float, out_wav: str) ->
              "-ss", f"{start_s:.3f}", "-t", f"{length_s:.3f}",
              "-i", path, "-ac", "1", "-ar", "16000", out_wav],
             capture_output=True, text=True, timeout=120,
+            **_subprocess_flags()
         )
         return res.returncode == 0 and os.path.exists(out_wav)
     except subprocess.SubprocessError as exc:
