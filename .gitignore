@@ -33,3 +33,6 @@ Launch_DVD_Identifier.bat
 # OS / editor
 .DS_Store
 *.swp
+
+# GUI runtime config (user-specific paths/preferences)
+gui_config.json

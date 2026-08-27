@@ -38,3 +38,12 @@ pydub>=0.25.1
 
 # Live microphone capture (only needed for identify_audio.py live mode)
 # pyaudio>=0.2.13        # install separately; needs system portaudio19-dev
+
+# =====================================================================
+# Modern desktop GUI (dvd_identifier_fluent.py)
+# =====================================================================
+# Windows 11 Fluent Design front-end over the identification engine.
+# Installing PySide6-Fluent-Widgets pulls in PySide6 automatically.
+# The classic Tkinter GUI (dvd_identifier_gui.py) needs none of these.
+PySide6-Fluent-Widgets>=1.11.0
+PySide6>=6.6
