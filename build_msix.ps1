@@ -12,8 +12,8 @@
          installed locally (side-loaded).
 
     The resulting .msix does NOT need Python installed on the target machine.
-    FFmpeg and fpcalc are bundled automatically IF they are found on PATH at
-    build time (recommended: run install.ps1 first so both exist).
+    FFmpeg is bundled automatically if it is found on PATH at build time
+    (recommended: run install.ps1 first so it exists).
 
 .PARAMETER Version
     Package version, must be 4 parts (e.g. 1.0.0.0). Default 1.0.0.0.
@@ -22,7 +22,7 @@
     Password for the generated signing certificate .pfx. Default "dvdid".
 
 .PARAMETER SkipBundleTools
-    Do not try to copy ffmpeg.exe / fpcalc.exe into the package.
+    Do not try to copy ffmpeg.exe into the package.
 
 .PARAMETER Publisher
     Certificate subject / manifest Publisher. Default "CN=DVDIdentifier".
@@ -164,9 +164,9 @@ $mx = $mx -replace 'Publisher="CN=DVDIdentifier"', ('Publisher="' + $Publisher +
 Set-Content -Path (Join-Path $DistApp "AppxManifest.xml") -Value $mx -Encoding UTF8
 Ok "Manifest staged (Version=$Version, Publisher=$Publisher)."
 
-# Bundle ffmpeg / fpcalc if present so the app is self-contained.
+# Bundle ffmpeg if present so the app is self-contained.
 if (-not $SkipBundleTools) {
-    foreach ($tool in @("fpcalc.exe", "ffmpeg.exe", "ffprobe.exe")) {
+    foreach ($tool in @("ffmpeg.exe", "ffprobe.exe")) {
         $src = (Get-Command $tool -ErrorAction SilentlyContinue).Source
         if ($src) {
             Copy-Item -Force $src (Join-Path $DistApp $tool)

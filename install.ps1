@@ -8,11 +8,10 @@
 
       1. Python 3            (via winget, if not already present)
       2. FFmpeg              (via winget - needed to decode video/audio)
-      3. fpcalc / Chromaprint(via winget: AcoustID.Chromaprint - acoustic engine)
-      4. A local virtual env (.venv) with the Python packages from requirements.txt
+      3. A local virtual env (.venv) with the Python packages from requirements.txt
          (this includes PySide6-Fluent-Widgets, the modern GUI toolkit)
-      5. The Vosk offline speech model (downloaded + unzipped into models\)
-      6. Shortcuts that launch dvd_identifier_fluent.py with the venv's Python
+      4. The Vosk offline speech model (downloaded + unzipped into models\)
+      5. Shortcuts that launch dvd_identifier_fluent.py with the venv's Python
 
     Re-running is safe: anything already installed is detected and skipped.
 
@@ -20,7 +19,7 @@
     Install the Python packages into the current Python instead of a .venv.
 
 .PARAMETER NoModel
-    Skip downloading the Vosk speech model (acoustic-only users don't need it).
+    Skip downloading the Vosk speech model.
 
 .PARAMETER NoShortcut
     Do not create Desktop / Start-menu shortcuts.
@@ -118,23 +117,12 @@ if (Test-Command "ffmpeg") {
     Install-WingetPackage "Gyan.FFmpeg" "FFmpeg"
 }
 
-# ---------------------------------------------------------------------------
-# 3. fpcalc (Chromaprint)
-# ---------------------------------------------------------------------------
-if (Test-Command "fpcalc") {
-    Ok "fpcalc already installed."
-} else {
-    Test-Winget
-    # This is exactly the package the user confirmed:  winget search fpcalc
-    Install-WingetPackage "AcoustID.Chromaprint" "Chromaprint (fpcalc)"
-}
-
 # refresh PATH so freshly-installed tools are visible to later checks
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
             [System.Environment]::GetEnvironmentVariable("Path", "User")
 
 # ---------------------------------------------------------------------------
-# 4. Python virtual environment + packages
+# 3. Python virtual environment + packages
 # ---------------------------------------------------------------------------
 $venvPy = $null
 if ($NoVenv) {
@@ -164,7 +152,7 @@ if ($NoVenv) {
 Ok "Python packages installed."
 
 # ---------------------------------------------------------------------------
-# 5. Vosk speech model (offline STT)
+# 4. Vosk speech model (offline STT)
 # ---------------------------------------------------------------------------
 if ($NoModel) {
     Warn "Skipping Vosk model download (--NoModel). Phonetic matching will not work"
@@ -186,7 +174,7 @@ if ($NoModel) {
 }
 
 # ---------------------------------------------------------------------------
-# 6. Launcher + shortcuts
+# 5. Launcher + shortcuts
 # ---------------------------------------------------------------------------
 # Write a launcher that uses the venv's pythonw (no console window).
 $launcher = Join-Path $ProjectDir "Launch_DVD_Identifier.bat"
@@ -236,7 +224,7 @@ Write-Host ""
 Write-Host "======================================================================"
 Write-Host "  Setup complete"
 Write-Host "======================================================================"
-foreach ($t in @("ffmpeg", "fpcalc")) {
+foreach ($t in @("ffmpeg")) {
     if (Test-Command $t) { Ok "$t on PATH" } else { Warn "$t NOT on PATH yet - open a new terminal" }
 }
 Write-Host ""
@@ -245,4 +233,4 @@ Write-Host "  - double-clicking the 'DVD Episode Identifier' Desktop shortcut, o
 Write-Host "  - double-clicking Launch_DVD_Identifier.bat, or"
 Write-Host "  - running:  $pyForBat dvd_identifier_fluent.py"
 Write-Host ""
-Write-Host "If ffmpeg/fpcalc show as 'NOT on PATH', just close and reopen your terminal."
+Write-Host "If ffmpeg shows as 'NOT on PATH', just close and reopen your terminal."

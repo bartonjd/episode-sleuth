@@ -5,7 +5,7 @@ REM  Double-click this file. It just runs install.ps1 with the right
 REM  execution policy so you do not have to type any PowerShell flags.
 REM =====================================================================
 cd /d "%~dp0"
-echo Running setup (this installs Python deps, ffmpeg, fpcalc and a shortcut)...
+echo Running setup (this installs Python deps, ffmpeg, Vosk model and a shortcut)...
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*
 echo.
