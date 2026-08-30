@@ -62,6 +62,7 @@ import csv
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -150,13 +151,14 @@ def _ffmpeg_extract(path: str, start_s: float, length_s: float,
 class EpisodeGuess:
     """One candidate episode identity with the evidence behind it."""
     episode_id: str                 # e.g. "S01E04"  (or "movie" / "?")
-    title: str
+    title: str                      # show title, e.g. "Matlock (1986)"
     season: Optional[int]
     episode: Optional[int]
     votes: int                      # samples that contributed (kept for compat)
     total_samples: int              # samples that produced any transcript
     mean_confidence: float          # phonetic match confidence
     method: str = "phonetic"        # phonetic | fuzzy
+    episode_title: str = ""         # canonical episode title from the DB
 
 
 @dataclass
@@ -168,6 +170,11 @@ class FileResult:
     needs_review: bool
     notes: str = ""
     elapsed_s: float = 0.0
+    # Naming verification (the whole point of the tool): is this file already
+    # named the way the reference library says it should be, and if not, what
+    # should it be renamed to?
+    name_status: str = "unknown"    # correct | rename | unknown
+    suggested_filename: str = ""
 
     def to_row(self) -> dict:
         g = self.guess
@@ -175,9 +182,12 @@ class FileResult:
             "filename": self.filename,
             "episode_id": g.episode_id if g else "UNKNOWN",
             "title": g.title if g else "",
+            "episode_title": g.episode_title if g else "",
             "confidence": round(g.mean_confidence, 4) if g else 0.0,
             "agreement": (f"{g.votes}/{g.total_samples}" if g else "0/0"),
             "method": g.method if g else "none",
+            "name_status": self.name_status,
+            "suggested_filename": self.suggested_filename,
             "duration_s": round(self.duration_s, 1),
             "needs_review": self.needs_review,
             "notes": self.notes,
@@ -194,6 +204,35 @@ def episode_id_str(season: Optional[int], episode: Optional[int]) -> str:
     if episode is not None:
         return f"E{episode:02d}"
     return "movie"
+
+
+# Characters that are illegal in Windows filenames.
+_ILLEGAL_FN_RE = re.compile(r'[\\/:*?"<>|]')
+
+
+def sanitize_filename(name: str) -> str:
+    """Strip characters that Windows forbids in filenames and tidy whitespace."""
+    cleaned = _ILLEGAL_FN_RE.sub(" ", name or "")
+    # collapse runs of whitespace and trim trailing dots/spaces
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
+    return cleaned
+
+
+def build_suggested_filename(show: str, season: Optional[int],
+                             episode: Optional[int], episode_title: str,
+                             ext: str) -> str:
+    """Compose the DB-correct filename for a media file:
+
+        "<Show> - S05E02 - <Episode Title><ext>"
+
+    Falls back gracefully when the episode title or season/episode are missing.
+    """
+    show = (show or "").strip()
+    episode_title = (episode_title or "").strip()
+    se = episode_id_str(season, episode)
+    parts = [p for p in (show, se if se != "movie" else "", episode_title) if p]
+    stem = " - ".join(parts) if parts else "Unknown"
+    return sanitize_filename(stem) + (ext or "")
 
 
 def discover_media(path_dir: str) -> List[str]:
@@ -469,9 +508,11 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
         # this batch belongs to (exact-match boost) and the episode title parsed
         # from THIS file's own name, if any (fuzzy episode-title boost).
         expected_show = getattr(args, "show_title", None)
+        file_season = file_episode = None
         try:
             import subtitle_utils as _su
-            _qs, _qe, query_episode_title = _su.parse_episode_info(fname)
+            file_season, file_episode, query_episode_title = \
+                _su.parse_episode_info(fname)
         except Exception:
             query_episode_title = None
 
@@ -501,9 +542,11 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                     notes_parts.append(", ".join(notes))
                 best = EpisodeGuess(
                     episode_id=episode_id_str(m.season, m.episode),
-                    title=m.title, season=m.season, episode=m.episode,
+                    title=(getattr(m, "show_title", None) or m.title),
+                    season=m.season, episode=m.episode,
                     votes=got, total_samples=len(windows),
                     mean_confidence=results[0].confidence, method="phonetic",
+                    episode_title=(getattr(m, "episode_title", None) or ""),
                 )
                 best_match_count = results[0].match_count
             else:
@@ -518,10 +561,12 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                         notes_parts.append(", ".join(notes))
                     best = EpisodeGuess(
                         episode_id=episode_id_str(m.season, m.episode),
-                        title=m.title, season=m.season, episode=m.episode,
+                        title=(getattr(m, "show_title", None) or m.title),
+                        season=m.season, episode=m.episode,
                         votes=got, total_samples=len(windows),
                         mean_confidence=fuzzy_results[0].confidence,
                         method="fuzzy",
+                        episode_title=(getattr(m, "episode_title", None) or ""),
                     )
                     best_match_count = fuzzy_results[0].match_count
         elif transcriber is not None:
@@ -552,16 +597,47 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                     notes_parts.append(
                         f"runtime {duration/60:.0f}m vs expected {exp}m")
 
+        # Naming verification: compare the current filename against what the
+        # reference library says this episode should be called. This is the
+        # core purpose of the tool (spot mislabelled rips, title new ones).
+        name_status = "unknown"
+        suggested_filename = ""
+        if best is not None:
+            ext = os.path.splitext(fname)[1]
+            suggested_filename = build_suggested_filename(
+                best.title, best.season, best.episode, best.episode_title, ext)
+            if needs_review:
+                # Not confident enough to assert the correct name.
+                name_status = "unknown"
+            elif (file_season is not None and file_episode is not None
+                  and file_season == best.season
+                  and file_episode == best.episode):
+                name_status = "correct"
+            else:
+                name_status = "rename"
+                if file_season is not None and file_episode is not None:
+                    notes_parts.append(
+                        f"named {episode_id_str(file_season, file_episode)} "
+                        f"but matches {best.episode_id}")
+                else:
+                    notes_parts.append("no S/E in filename")
+
         result = FileResult(
             filename=fname, path=path, duration_s=duration, guess=best,
             needs_review=needs_review, notes="; ".join(notes_parts),
             elapsed_s=time.time() - t0,
+            name_status=name_status, suggested_filename=suggested_filename,
         )
 
         if best is not None:
             flag = "  ! REVIEW" if needs_review else "  OK"
-            _log(f"    => {best.episode_id}  {best.title}  "
+            ep_disp = f" - {best.episode_title}" if best.episode_title else ""
+            _log(f"    => {best.episode_id}{ep_disp}  ({best.title})  "
                  f"[{best.method}, conf {best.mean_confidence:.0%}]{flag}")
+            if name_status == "correct":
+                _log("       name: correct")
+            elif name_status == "rename":
+                _log(f"       name: should be \"{suggested_filename}\"")
             if result.notes:
                 _log(f"       note: {result.notes}")
         else:
@@ -575,7 +651,8 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
 # Output writers
 # ---------------------------------------------------------------------------
 def write_csv(results: List[FileResult], path: str) -> None:
-    fields = ["filename", "episode_id", "title", "confidence", "agreement",
+    fields = ["filename", "episode_id", "title", "episode_title",
+              "name_status", "suggested_filename", "confidence", "agreement",
               "method", "duration_s", "needs_review", "notes", "elapsed_s"]
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=fields)
@@ -726,11 +803,18 @@ def main(argv=None):
     print("=" * 70)
     ok = [r for r in results if not r.needs_review]
     review = [r for r in results if r.needs_review]
+    correct = [r for r in ok if r.name_status == "correct"]
+    rename = [r for r in ok if r.name_status == "rename"]
     print(f"  identified confidently : {len(ok)}/{len(results)}")
+    print(f"    named correctly      : {len(correct)}")
+    print(f"    need renaming        : {len(rename)}")
     for r in ok:
         g = r.to_row()
-        print(f"    OK {g['filename']:<45.45}  -> {g['episode_id']}  "
+        tag = "OK " if r.name_status == "correct" else "REN"
+        print(f"    {tag} {g['filename']:<45.45}  -> {g['episode_id']}  "
               f"({g['method']}, {g['confidence']:.0%})")
+        if r.name_status == "rename":
+            print(f"        should be: {g['suggested_filename']}")
     if review:
         print(f"\n  needs manual review    : {len(review)}")
         for r in review:

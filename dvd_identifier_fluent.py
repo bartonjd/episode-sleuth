@@ -275,7 +275,8 @@ def _path_row(placeholder: str):
 # Identify page
 # ---------------------------------------------------------------------------
 class IdentifyInterface(QWidget):
-    COLS = ["", "File", "Episode", "Title", "Conf.", "Method", "Agree", "Notes"]
+    COLS = ["", "File", "Status", "Episode", "Episode Title",
+            "Suggested Name", "Conf.", "Method", "Agree", "Notes"]
 
     def __init__(self, window: "MainWindow"):
         super().__init__()
@@ -384,10 +385,11 @@ class IdentifyInterface(QWidget):
         hdr.setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.setColumnWidth(0, 40)
         hdr.setSectionResizeMode(1, QHeaderView.Stretch)      # File
-        hdr.setSectionResizeMode(3, QHeaderView.Stretch)      # Title
-        for c in (2, 4, 5, 6):
+        hdr.setSectionResizeMode(4, QHeaderView.Stretch)      # Episode Title
+        hdr.setSectionResizeMode(5, QHeaderView.Stretch)      # Suggested Name
+        hdr.setSectionResizeMode(9, QHeaderView.Stretch)      # Notes
+        for c in (2, 3, 6, 7, 8):  # Status, Episode, Conf, Method, Agree
             hdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(7, QHeaderView.Stretch)      # Notes
         root.addWidget(self.table, 1)
 
     # ----- pickers -----
@@ -486,17 +488,22 @@ class IdentifyInterface(QWidget):
         self.table.insertRow(row)
         data = r.to_row()
         conf = data["confidence"]
+        status = data.get("name_status", "unknown")
 
-        # tint + auto-check high-confidence rows
-        if r.needs_review or conf < float(self.review_spin.value()):
+        # Tint + auto-check driven by the naming verdict (the point of the tool):
+        #   correct -> green, rename -> amber (action needed), unknown -> red.
+        if r.needs_review or status == "unknown":
             tint = COLOR_REVIEW
             auto_check = False
-        elif conf >= 0.7:
+            status_text = "Review"
+        elif status == "correct":
             tint = COLOR_OK
             auto_check = True
-        else:
+            status_text = "Correct"
+        else:  # rename
             tint = COLOR_MEDIUM
             auto_check = True
+            status_text = "Rename"
 
         # checkbox column (stores the result index in UserRole)
         chk = QTableWidgetItem()
@@ -506,10 +513,19 @@ class IdentifyInterface(QWidget):
         self.table.setItem(row, 0, chk)
 
         notes = data["notes"] or ("ok" if not r.needs_review else "review")
+        # For correctly-named files the suggested name equals the current name;
+        # show a dash to keep the column uncluttered. Otherwise show the target.
+        suggested = data.get("suggested_filename", "")
+        if status == "correct":
+            suggested_disp = "-"
+        else:
+            suggested_disp = suggested or "-"
         values = [
             data["filename"],
+            status_text,
             data["episode_id"],
-            data["title"],
+            data.get("episode_title", ""),
+            suggested_disp,
             f"{conf:.0%}",
             data["method"],
             data["agreement"],
@@ -517,7 +533,7 @@ class IdentifyInterface(QWidget):
         ]
         for col, text in enumerate(values, start=1):
             item = QTableWidgetItem(str(text))
-            if col in (2, 4, 6):  # episode, conf, agree centered
+            if col in (2, 3, 6, 8):  # status, episode, conf, agree centered
                 item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, col, item)
 
@@ -616,7 +632,11 @@ class IdentifyInterface(QWidget):
             season_dir = os.path.join(dest, show, f"Season {g.season:02d}")
             os.makedirs(season_dir, exist_ok=True)
             ext = os.path.splitext(r.path)[1]
-            newname = f"{show} - {episode_id_str(g.season, g.episode)}{ext}"
+            # Prefer the DB-correct name (includes the episode title) so Plex
+            # gets a fully-titled file; fall back to bare SxxEyy if unknown.
+            newname = r.suggested_filename or (
+                f"{show} - {episode_id_str(g.season, g.episode)}{ext}")
+            newname = self._safe(os.path.splitext(newname)[0]) + ext
             try:
                 shutil.copy2(r.path, os.path.join(season_dir, newname))
                 done += 1
