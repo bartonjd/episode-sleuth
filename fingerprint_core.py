@@ -244,7 +244,10 @@ class FingerprintDB:
 
     def __init__(self, path: str):
         self.path = path
-        self.conn = sqlite3.connect(path)
+        # check_same_thread=False so a connection opened in one thread stays
+        # usable if handed to another; the batch identifier opens a separate
+        # connection per worker (reads only), which SQLite handles concurrently.
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
 
@@ -300,42 +303,6 @@ class FingerprintDB:
             """
         )
 
-        # --- Acoustic (Chromaprint) fingerprint tables -----------------------
-        # One row per audio SEGMENT (e.g. 30 s). The raw Chromaprint fingerprint
-        # (list of uint32 frames) is stored as a BLOB so it can be re-aligned
-        # against a query for an exact bit-error-rate score.
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS acoustic_segments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                media_id INTEGER NOT NULL,
-                segment_index INTEGER,
-                start_ms INTEGER,
-                end_ms INTEGER,
-                num_frames INTEGER,
-                fingerprint BLOB,
-                FOREIGN KEY(media_id) REFERENCES media(id)
-            )
-            """
-        )
-        # Inverted index of individual sub-fingerprints (one Chromaprint frame
-        # integer) -> segment + position, for fast candidate lookup / offset
-        # histogram alignment.
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS acoustic_index (
-                subfp INTEGER NOT NULL,
-                segment_id INTEGER NOT NULL,
-                media_id INTEGER NOT NULL,
-                position INTEGER,
-                FOREIGN KEY(segment_id) REFERENCES acoustic_segments(id),
-                FOREIGN KEY(media_id) REFERENCES media(id)
-            )
-            """
-        )
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_ac_subfp ON acoustic_index(subfp)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_ac_seg ON acoustic_index(segment_id)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_ac_seg_media ON acoustic_segments(media_id)")
         self.conn.commit()
 
     def get_or_create_media(self, info: MediaInfo) -> int:
@@ -415,7 +382,7 @@ class FingerprintDB:
 
     def all_token_stream_media_ids(self) -> List[int]:
         """All media ids that have a stored phonetic token stream (used by the
-        fuzzy matcher's full-database fallback when no acoustic shortlist)."""
+        fuzzy matcher's full-database fallback when no candidate shortlist)."""
         cur = self.conn.cursor()
         cur.execute("SELECT media_id FROM media_tokens")
         return [r["media_id"] for r in cur.fetchall()]
@@ -446,24 +413,7 @@ class FingerprintDB:
         for row in cur.fetchall():
             cur.execute("DELETE FROM fingerprints WHERE media_id=?", (row["id"],))
             cur.execute("DELETE FROM media_tokens WHERE media_id=?", (row["id"],))
-            cur.execute("DELETE FROM acoustic_index WHERE media_id=?", (row["id"],))
-            cur.execute("DELETE FROM acoustic_segments WHERE media_id=?", (row["id"],))
             cur.execute("DELETE FROM media WHERE id=?", (row["id"],))
-        self.conn.commit()
-
-    def clear_media_acoustic(self, info: MediaInfo) -> None:
-        """Remove only the acoustic fingerprints for a media entry (keeps
-        phonetic fingerprints and the media row intact)."""
-        cur = self.conn.cursor()
-        cur.execute(
-            """SELECT id FROM media WHERE title=? AND IFNULL(year,-1)=IFNULL(?,-1)
-               AND media_type=? AND IFNULL(season,-1)=IFNULL(?,-1)
-               AND IFNULL(episode,-1)=IFNULL(?,-1) AND source=?""",
-            (info.title, info.year, info.media_type, info.season, info.episode, info.source),
-        )
-        for row in cur.fetchall():
-            cur.execute("DELETE FROM acoustic_index WHERE media_id=?", (row["id"],))
-            cur.execute("DELETE FROM acoustic_segments WHERE media_id=?", (row["id"],))
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -484,128 +434,23 @@ class FingerprintDB:
         )
         return cur.fetchone() is not None
 
-    def file_has_acoustic(self, source: str) -> bool:
-        """Return True if a media row with this `source` (file path) already has
-        at least one acoustic segment row."""
-        if not source:
-            return False
-        cur = self.conn.cursor()
-        cur.execute(
-            """SELECT 1 FROM acoustic_segments s
-               JOIN media m ON m.id = s.media_id
-               WHERE m.source = ? LIMIT 1""",
-            (source,),
-        )
-        return cur.fetchone() is not None
-
-    def file_already_fingerprinted(self, source: str, acoustic: bool = False) -> bool:
-        """Convenience wrapper: check whether `source` already has fingerprints.
-
-        When ``acoustic`` is False (default) the phonetic ``fingerprints`` table
-        is checked; when True the ``acoustic_segments`` table is checked.
-        """
-        if acoustic:
-            return self.file_has_acoustic(source)
+    def file_already_fingerprinted(self, source: str) -> bool:
+        """Convenience wrapper: check whether `source` already has phonetic
+        fingerprints in the database."""
         return self.file_has_phonetic(source)
 
     # ------------------------------------------------------------------
-    # Acoustic (Chromaprint) storage & lookup
+    # Phonetic shingle lookup
     # ------------------------------------------------------------------
-
-    def add_acoustic_segment(self, media_id: int, segment_index: int,
-                             start_ms: int, end_ms: int,
-                             raw_ints: List[int], index_stride: int = 1) -> int:
-        """Store one segment's Chromaprint fingerprint plus its inverted-index
-        rows. Returns the new segment_id.
-
-        `raw_ints` is the list of uint32 Chromaprint frames for the segment.
-        `index_stride` lets you index every Nth frame to shrink the index.
-        """
-        import struct
-        blob = struct.pack(f"<{len(raw_ints)}I",
-                           *[(x & 0xFFFFFFFF) for x in raw_ints])
-        cur = self.conn.cursor()
-        cur.execute(
-            """INSERT INTO acoustic_segments
-               (media_id, segment_index, start_ms, end_ms, num_frames, fingerprint)
-               VALUES (?,?,?,?,?,?)""",
-            (media_id, segment_index, start_ms, end_ms, len(raw_ints),
-             sqlite3.Binary(blob)),
-        )
-        segment_id = cur.lastrowid
-        idx_rows = [
-            ((raw_ints[pos] & 0xFFFFFFFF), segment_id, media_id, pos)
-            for pos in range(0, len(raw_ints), max(1, index_stride))
-        ]
-        if idx_rows:
-            cur.executemany(
-                "INSERT INTO acoustic_index (subfp, segment_id, media_id, position) "
-                "VALUES (?,?,?,?)",
-                idx_rows,
-            )
-        self.conn.commit()
-        return segment_id
-
-    def lookup_acoustic_index(self, subfps: Iterable[int]) -> List[sqlite3.Row]:
-        """Return inverted-index rows (subfp, segment_id, media_id, position)
-        matching the given sub-fingerprint integers."""
-        subfps = list({(x & 0xFFFFFFFF) for x in subfps})
-        if not subfps:
-            return []
-        results: List[sqlite3.Row] = []
-        cur = self.conn.cursor()
-        CHUNK = 400
-        for i in range(0, len(subfps), CHUNK):
-            chunk = subfps[i:i + CHUNK]
-            placeholders = ",".join("?" * len(chunk))
-            cur.execute(
-                f"""SELECT subfp, segment_id, media_id, position
-                    FROM acoustic_index WHERE subfp IN ({placeholders})""",
-                chunk,
-            )
-            results.extend(cur.fetchall())
-        return results
-
-    def get_acoustic_segment(self, segment_id: int) -> Optional[dict]:
-        """Return a segment's metadata + decoded raw fingerprint list."""
-        import struct
-        cur = self.conn.cursor()
-        cur.execute(
-            """SELECT s.*, m.title, m.year, m.media_type, m.season, m.episode
-               FROM acoustic_segments s JOIN media m ON s.media_id = m.id
-               WHERE s.id=?""",
-            (segment_id,),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        blob = row["fingerprint"]
-        n = row["num_frames"] or (len(blob) // 4)
-        raw = list(struct.unpack(f"<{n}I", blob)) if blob else []
-        return {
-            "id": row["id"], "media_id": row["media_id"],
-            "segment_index": row["segment_index"],
-            "start_ms": row["start_ms"], "end_ms": row["end_ms"],
-            "num_frames": n, "raw": raw,
-            "title": row["title"], "year": row["year"],
-            "media_type": row["media_type"], "season": row["season"],
-            "episode": row["episode"],
-        }
-
-    def all_acoustic_segment_ids(self) -> List[int]:
-        cur = self.conn.cursor()
-        cur.execute("SELECT id FROM acoustic_segments")
-        return [r["id"] for r in cur.fetchall()]
 
     def lookup(self, hashes: Iterable[str],
                media_ids: Optional[Iterable[int]] = None) -> List[sqlite3.Row]:
         """Return all fingerprint rows (joined with media) matching given hashes.
 
         If ``media_ids`` is given, the search is *scoped* to only those media
-        rows. This powers the two-stage hybrid workflow: acoustic matching first
-        produces a shortlist of candidate episodes, and the (much larger)
-        phonetic search is then restricted to just those candidates, which is
-        dramatically faster than scanning the whole fingerprint table.
+        rows. This lets the fuzzy stage restrict the (much larger) phonetic
+        search to a shortlist of candidate episodes, which is dramatically
+        faster than scanning the whole fingerprint table.
         """
         hashes = list(set(hashes))
         if not hashes:
@@ -653,14 +498,11 @@ class FingerprintDB:
     ) -> List[int]:
         """Resolve (title, season, episode) keys to *all* matching media ids.
 
-        The same episode is often stored under more than one ``media`` row — e.g.
-        a subtitle row (which carries the phonetic fingerprints) and a separate
-        media-file row (which carries the acoustic segments). The two-stage
-        hybrid workflow shortlists candidates acoustically (media-file rows) but
-        must then run phonetic matching against the subtitle rows for the *same*
-        episode. This method bridges the two by matching on the episode identity
-        (title + season + episode) rather than the raw media id, so scoping works
-        regardless of which row type produced the candidate.
+        The same episode can be stored under more than one ``media`` row (for
+        example if a subtitle was imported more than once). This method resolves
+        candidates by episode identity (title + season + episode) rather than the
+        raw media id, so scoping works regardless of which row produced the
+        candidate.
         """
         keys = list(episodes)
         if not keys:
@@ -697,12 +539,7 @@ class FingerprintDB:
         media_count = cur.fetchone()["c"]
         cur.execute("SELECT COUNT(*) AS c FROM fingerprints")
         fp_count = cur.fetchone()["c"]
-        cur.execute("SELECT COUNT(*) AS c FROM acoustic_segments")
-        ac_seg = cur.fetchone()["c"]
-        cur.execute("SELECT COUNT(*) AS c FROM acoustic_index")
-        ac_idx = cur.fetchone()["c"]
-        return {"media": media_count, "fingerprints": fp_count,
-                "acoustic_segments": ac_seg, "acoustic_subfps": ac_idx}
+        return {"media": media_count, "fingerprints": fp_count}
 
     def list_media(self) -> List[sqlite3.Row]:
         cur = self.conn.cursor()
@@ -712,9 +549,9 @@ class FingerprintDB:
     def count_fingerprints(self, media_ids: Optional[Iterable[int]] = None) -> int:
         """Number of phonetic fingerprint rows, optionally scoped to media_ids.
 
-        Used by the hybrid identifier's verbose logging to quantify how much the
-        acoustic shortlist shrinks the phonetic search space (scoped rows vs the
-        whole fingerprint table)."""
+        Used by the identifier's verbose logging to quantify how much a candidate
+        shortlist shrinks the phonetic search space (scoped rows vs the whole
+        fingerprint table)."""
         cur = self.conn.cursor()
         if media_ids is None:
             cur.execute("SELECT COUNT(*) AS c FROM fingerprints")
@@ -916,8 +753,8 @@ class FuzzyConfig:
     # on a short / noisy query the top two candidates can sit very close
     # together. ``min_margin`` requires the winner to beat the runner-up by this
     # confidence gap before the fuzzy result is trusted; ambiguous matches
-    # (e.g. 0.87 vs 0.81) are rejected and the caller keeps the safer exact /
-    # acoustic verdict instead of guessing.
+    # (e.g. 0.87 vs 0.81) are rejected and the caller keeps the safer exact
+    # verdict instead of guessing.
     min_margin: float = 0.12
 
     @classmethod
@@ -943,8 +780,8 @@ def score_fuzzy_matches(query_tokens: List[str],
     query_tokens
         Phonetic token stream of the unknown audio (see ``phonetic_token_stream``).
     candidate_streams
-        Mapping ``media_id -> (MediaInfo, ref_tokens, ref_starts)``. Typically the
-        handful of episodes shortlisted by the acoustic stage (loaded via
+        Mapping ``media_id -> (MediaInfo, ref_tokens, ref_starts)``. Typically a
+        shortlist of candidate episodes (loaded via
         ``FingerprintDB.get_token_stream``).
     fuzzy_cfg
         Tuning thresholds (see :class:`FuzzyConfig`).

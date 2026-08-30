@@ -17,7 +17,7 @@
     "fuzzy_edit_distance": 1,
     "enable_fuzzy": true,
     "top_n_results": 5,
-    "_fuzzy_comment": "Order-preserving phonetic LCS matcher. Used as a FALLBACK only when exact shingle-hash confidence is below threshold (STT word errors break exact shingles). min_lcs_ratio = min (LCS length / query tokens) to accept a match; min_query_tokens guards against trusting very short queries; weight scales the fuzzy confidence; min_margin requires the top candidate to beat the runner-up by this gap (LCS is biased toward longer/common-word references, so ambiguous near-ties are rejected and the safer exact/acoustic verdict is kept).",
+    "_fuzzy_comment": "Order-preserving phonetic LCS matcher. Used as a FALLBACK only when exact shingle-hash confidence is below threshold (STT word errors break exact shingles). min_lcs_ratio = min (LCS length / query tokens) to accept a match; min_query_tokens guards against trusting very short queries; weight scales the fuzzy confidence; min_margin requires the top candidate to beat the runner-up by this gap (LCS is biased toward longer/common-word references, so ambiguous near-ties are rejected and the safer exact verdict is kept).",
     "fuzzy": {
       "enabled": true,
       "min_lcs_ratio": 0.45,
@@ -37,29 +37,7 @@
     "vosk_model_path": "models/vosk-model-small-en-us-0.15",
     "google_language": "en-US"
   },
-  "acoustic": {
-    "segment_seconds": 30,
-    "overlap_seconds": 5,
-    "fpcalc_path": "fpcalc",
-    "max_bit_error": 5,
-    "align_window": 8,
-    "min_overlap_frames": 10,
-    "confidence_threshold": 0.30,
-    "index_stride": 1,
-    "query_chunk_seconds": 15,
-    "brute_force_fallback": true,
-    "brute_force_max_segments": 8000,
-    "candidate_max_bit_error": 9,
-    "candidate_min_overlap_frames": 8
-  },
-  "_hybrid_comment": "RECOMMENDED mode (identify_audio.py --hybrid). Stage 1 acoustically shortlists the top_candidates_count most likely episodes (high-recall, noise-tolerant); Stage 2 runs precise phonetic matching scoped ONLY to those candidates. Much faster than full-DB phonetic search and more accurate than acoustic alone. If acoustic finds nothing, phonetic falls back to the full database.",
-  "hybrid": {
-    "top_candidates_count": 5,
-    "acoustic_shortlist_threshold": 0.0,
-    "phonetic_confirm_threshold": 0.15,
-    "acoustic_shortlist_reliable": 0.15
-  },
-  "_dvd_comment": "identify_dvd_episodes.py (batch DVD-rip identification) reuses the acoustic + matching + hybrid settings. 'acoustic_shortlist_reliable' is the minimum acoustic confidence for the shortlist to be trusted when scoping the phonetic fallback; below it, the phonetic fallback widens to the whole database so a wrong low-confidence acoustic top-1 cannot poison the result.",
+  "_dvd_comment": "identify_dvd_episodes.py (batch DVD-rip identification) transcribes a few short audio samples from each unknown file with STT and matches the dialogue against the subtitle-built database using the 'matching' + 'fuzzy' settings above. Exact phonetic-shingle matching runs first; the order-preserving fuzzy matcher is the fallback when STT word errors break exact shingles.",
   "opensubtitles": {
     "provider": "auto",
     "api_key": "c0OzS5ibu6XHtmWGJW1QyBY9MyESAhVf",

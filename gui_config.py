@@ -30,14 +30,12 @@ DEFAULTS: Dict[str, Any] = {
     "engine_config_path": "",
     "last_source": "",
     "last_subtitle_source": "",
-    "last_acoustic_source": "",
     "last_export_dir": "",
     "last_rename_dest": "",
     "samples_per_file": 5,
     "sample_length": 12.0,
-    "phonetic_fallback": True,
+    "max_workers": 4,           # files identified in parallel
     "review_confidence": 0.35,
-    "min_agreement": 0.5,
     "theme": "Dark",            # "Dark" | "Light" | "Auto"
     "theme_color": "#0078d4",   # Windows 11 accent blue
 }

@@ -7,7 +7,7 @@ identifier, built with PySide6 and PySide6-Fluent-Widgets.
 
 It is the sole desktop front end for the project (the earlier Tkinter version
 has been retired). It talks to the same engine (identify_dvd_episodes.py +
-fingerprint_core.py + acoustic_fingerprint.py); the presentation is:
+fingerprint_core.py); the presentation is:
 
   * a dark, acrylic FluentWindow with an icon sidebar (Identify / Build library /
     Settings / Log),
@@ -31,6 +31,7 @@ import sys
 import shutil
 import logging
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from typing import List, Optional
 
@@ -64,8 +65,6 @@ from identify_dvd_episodes import (
     episode_id_str,
 )
 from fingerprint_core import FingerprintDB, FingerprintConfig, load_config
-import acoustic_fingerprint as af
-from acoustic_fingerprint import AcousticConfig, FpcalcNotFoundError
 
 from gui_config import GuiConfig
 
@@ -123,23 +122,12 @@ class IdentifyWorker(QThread):
     def run(self):
         try:
             cfg = load_config(self.params.config_path)
-            db = FingerprintDB(self.db_path)
             fp_cfg = FingerprintConfig.from_config(cfg)
-            ac_cfg = AcousticConfig.from_config(cfg)
-            try:
-                af.check_fpcalc(ac_cfg.fpcalc_path)
-            except FpcalcNotFoundError as exc:
-                db.close()
-                self.failed.emit(
-                    f"fpcalc not found: {exc}\nSee INSTALL_WINDOWS.md to set it up.")
-                return
 
             args = SimpleNamespace(
                 points=self.params.points,
                 sample_len=self.params.sample_len,
-                no_phonetic=self.params.no_phonetic,
                 review_confidence=self.params.review_confidence,
-                min_agreement=self.params.min_agreement,
                 runtime_tolerance=self.params.runtime_tolerance,
             )
 
@@ -148,33 +136,59 @@ class IdentifyWorker(QThread):
             else:
                 media = [self.source]
             if not media:
-                db.close()
                 self.failed.emit("No media files found to identify.")
                 return
 
-            logging.info("Identifying %d file(s) against %s",
-                         len(media), os.path.basename(self.db_path))
-            transcriber_box: dict = {}
+            # One shared speech-to-text engine for every worker thread. Vosk's
+            # Model is safe to share (each transcription builds its own
+            # recogniser internally).
+            try:
+                import stt_utils
+                transcriber = stt_utils.get_transcriber(cfg)
+            except Exception as exc:
+                self.failed.emit(
+                    f"Could not initialise the speech-to-text engine: {exc}\n"
+                    "See INSTALL_WINDOWS.md / README to download a Vosk model.")
+                return
+
+            workers = max(1, int(getattr(self.params, "max_workers", 4)))
+            logging.info("Identifying %d file(s) against %s with %d worker(s)",
+                         len(media), os.path.basename(self.db_path), workers)
+
             results: List[FileResult] = []
-            for i, path in enumerate(media, 1):
-                if self._cancel:
-                    logging.info("Identification cancelled by user.")
-                    db.close()
-                    self.wasCancelled.emit(len(results))
-                    return
-                self.progress.emit(i, len(media), os.path.basename(path))
-                try:
-                    r = identify_one(path, db, fp_cfg, ac_cfg, cfg, args,
-                                     transcriber_box, None)
-                    results.append(r)
-                    self.rowReady.emit(r)
-                except FpcalcNotFoundError as exc:
-                    db.close()
-                    self.failed.emit(f"fpcalc error: {exc}")
-                    return
-                except Exception as exc:   # keep going on a single bad file
-                    logging.error("ERROR on %s: %s", os.path.basename(path), exc)
-            db.close()
+            done = 0
+            total = len(media)
+
+            def _work(path):
+                # Each call opens its own DB connection (thread-safe).
+                return identify_one(path, self.db_path, fp_cfg, cfg, args,
+                                    transcriber, None)
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = {}
+                for path in media:
+                    if self._cancel:
+                        break
+                    futs[pool.submit(_work, path)] = path
+                for fut in as_completed(futs):
+                    path = futs[fut]
+                    done += 1
+                    self.progress.emit(done, total, os.path.basename(path))
+                    if self._cancel:
+                        continue
+                    try:
+                        r = fut.result()
+                        results.append(r)
+                        self.rowReady.emit(r)
+                    except Exception as exc:  # keep going on a single bad file
+                        logging.error("ERROR on %s: %s",
+                                      os.path.basename(path), exc)
+
+            if self._cancel:
+                logging.info("Identification cancelled by user.")
+                self.wasCancelled.emit(len(results))
+                return
+
             review = sum(1 for r in results if r.needs_review)
             self.finishedOk.emit(len(results), review)
         except Exception as exc:
@@ -308,14 +322,11 @@ class IdentifyInterface(QWidget):
         self.review_spin.setValue(float(self.cfg.get("review_confidence", 0.35)))
         grid.addWidget(self.review_spin, 1, 2)
 
-        phon_box = QVBoxLayout()
-        phon_box.addWidget(BodyLabel("Phonetic fallback"))
-        self.phon_switch = SwitchButton()
-        self.phon_switch.setChecked(bool(self.cfg.get("phonetic_fallback", True)))
-        self.phon_switch.setOnText("Use dialogue")
-        self.phon_switch.setOffText("Acoustic only")
-        phon_box.addWidget(self.phon_switch)
-        grid.addLayout(phon_box, 0, 3, 2, 1)
+        grid.addWidget(BodyLabel("Parallel workers"), 0, 3)
+        self.workers_spin = SpinBox()
+        self.workers_spin.setRange(1, 16)
+        self.workers_spin.setValue(int(self.cfg.get("max_workers", 4)))
+        grid.addWidget(self.workers_spin, 1, 3)
 
         grid.setColumnStretch(4, 1)
         opt_card.addLayout(grid)
@@ -402,7 +413,7 @@ class IdentifyInterface(QWidget):
             last_source=source,
             samples_per_file=int(self.samples_spin.value()),
             sample_length=float(self.samplelen_spin.value()),
-            phonetic_fallback=bool(self.phon_switch.isChecked()),
+            max_workers=int(self.workers_spin.value()),
             review_confidence=float(self.review_spin.value()),
         )
         self.cfg.save()
@@ -413,9 +424,8 @@ class IdentifyInterface(QWidget):
             config_path=self.win.current_engine_config() or None,
             points=points,
             sample_len=float(self.samplelen_spin.value()),
-            no_phonetic=not self.phon_switch.isChecked(),
+            max_workers=int(self.workers_spin.value()),
             review_confidence=float(self.review_spin.value()),
-            min_agreement=float(self.cfg.get("min_agreement", 0.5)),
             runtime_tolerance=4.0,
         )
 
@@ -636,11 +646,11 @@ class BuildInterface(QWidget):
 
         root.addWidget(TitleLabel("Build reference library"))
         root.addWidget(CaptionLabel(
-            "Phonetic matching needs subtitle files (.srt/.vtt); acoustic "
-            "matching needs the actual video/audio. Add either or both."))
+            "Dialogue (phonetic) matching needs subtitle files (.srt/.vtt) for "
+            "the episodes you want to identify. Add a folder or a single file."))
 
         # subtitles card
-        subs_card = Card("1.  Add subtitles  (phonetic reference)")
+        subs_card = Card("Add subtitles  (phonetic reference)")
         self.subs_edit = _path_row("Folder or .srt/.vtt file")
         self.subs_edit.setText(self.cfg.get("last_subtitle_source", ""))
         subs_folder = PushButton("Folder", self, FIF.FOLDER)
@@ -653,20 +663,6 @@ class BuildInterface(QWidget):
         self.subs_btn.clicked.connect(self._build_subs)
         subs_card.addWidget(self.subs_btn)
         root.addWidget(subs_card)
-
-        # acoustic card
-        vids_card = Card("2.  Add video/audio  (acoustic reference)")
-        self.vids_edit = _path_row("Folder or video/audio file")
-        self.vids_edit.setText(self.cfg.get("last_acoustic_source", ""))
-        vids_folder = PushButton("Folder", self, FIF.FOLDER)
-        vids_file = PushButton("File", self, FIF.VIDEO)
-        vids_folder.clicked.connect(lambda: self._pick(self.vids_edit, True))
-        vids_file.clicked.connect(lambda: self._pick(self.vids_edit, False))
-        vids_card.add(self.vids_edit, vids_folder, vids_file)
-        self.vids_btn = PrimaryPushButton("Add acoustic fingerprints", self, FIF.MUSIC)
-        self.vids_btn.clicked.connect(self._build_acoustic)
-        vids_card.addWidget(self.vids_btn)
-        root.addWidget(vids_card)
 
         self.build_progress = IndeterminateProgressBar()
         self.build_progress.setVisible(False)
@@ -700,24 +696,11 @@ class BuildInterface(QWidget):
         self._run([sys.executable, os.path.join(HERE, "create_fingerprint.py"),
                    flag, path, "--db", self.win.current_db_path() or DEFAULT_DB])
 
-    def _build_acoustic(self):
-        path = self.vids_edit.text().strip()
-        if not path or not os.path.exists(path):
-            self._error("Pick a video/audio file or folder first.")
-            return
-        self.cfg.update(last_acoustic_source=path)
-        self.cfg.save()
-        flag = "--dir" if os.path.isdir(path) else "--file"
-        self._run([sys.executable,
-                   os.path.join(HERE, "create_acoustic_fingerprint.py"),
-                   flag, path, "--db", self.win.current_db_path() or DEFAULT_DB])
-
     def _run(self, cmd: List[str]):
         if self.worker and self.worker.isRunning():
             self._error("A build task is already running.")
             return
         self.subs_btn.setEnabled(False)
-        self.vids_btn.setEnabled(False)
         self.build_progress.setVisible(True)
         self.build_out.append(f"$ {' '.join(cmd)}")
         self.worker = BuildWorker(cmd)
@@ -728,7 +711,6 @@ class BuildInterface(QWidget):
     def _on_done(self, code: int):
         self.build_progress.setVisible(False)
         self.subs_btn.setEnabled(True)
-        self.vids_btn.setEnabled(True)
         if code == 0:
             InfoBar.success("Library updated", "Fingerprints added to the database.",
                             duration=5000, position=InfoBarPosition.TOP, parent=self)
@@ -795,20 +777,22 @@ class SettingsInterface(QWidget):
         appear_card.addLayout(appear_grid)
         root.addWidget(appear_card)
 
-        # advanced matching defaults card
-        adv_card = Card("Default matching preferences")
-        adv_grid = QGridLayout()
-        adv_grid.setHorizontalSpacing(24)
-        adv_grid.setVerticalSpacing(10)
-        adv_grid.addWidget(BodyLabel("Minimum sample agreement"), 0, 0)
-        self.min_agree_spin = DoubleSpinBox()
-        self.min_agree_spin.setRange(0.0, 1.0)
-        self.min_agree_spin.setSingleStep(0.1)
-        self.min_agree_spin.setValue(float(self.cfg.get("min_agreement", 0.5)))
-        adv_grid.addWidget(self.min_agree_spin, 1, 0)
-        adv_grid.setColumnStretch(1, 1)
-        adv_card.addLayout(adv_grid)
-        root.addWidget(adv_card)
+        # performance card
+        perf_card = Card("Performance")
+        perf_grid = QGridLayout()
+        perf_grid.setHorizontalSpacing(24)
+        perf_grid.setVerticalSpacing(10)
+        perf_grid.addWidget(BodyLabel("Max parallel workers"), 0, 0)
+        self.workers_spin = SpinBox()
+        self.workers_spin.setRange(1, 16)
+        self.workers_spin.setValue(int(self.cfg.get("max_workers", 4)))
+        perf_grid.addWidget(self.workers_spin, 1, 0)
+        perf_grid.addWidget(
+            CaptionLabel("Number of files identified at the same time. Higher "
+                         "values are faster on multi-core machines."), 2, 0)
+        perf_grid.setColumnStretch(1, 1)
+        perf_card.addLayout(perf_grid)
+        root.addWidget(perf_card)
 
         save_row = QHBoxLayout()
         save_row.addStretch(1)
@@ -840,7 +824,7 @@ class SettingsInterface(QWidget):
             db_path=self.db_edit.text().strip(),
             engine_config_path=self.eng_edit.text().strip(),
             theme=self.theme_combo.currentText(),
-            min_agreement=float(self.min_agree_spin.value()),
+            max_workers=int(self.workers_spin.value()),
         )
         self.cfg.save()
         InfoBar.success("Saved", "Your settings have been saved.",

@@ -147,61 +147,17 @@ def run_show(query, db, fp_cfg, cfg, limit, media_type, year_override=None, forc
     return grand, processed, skipped
 
 
-MEDIA_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".m4v",
-              ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac")
-
-
-def run_acoustic(target, db, ac_cfg, title, year, media_type, force=False):
-    """Build acoustic (Chromaprint) fingerprints from audio/video file(s)."""
-    import glob
-    import acoustic_fingerprint as af
-
-    if os.path.isfile(target):
-        files = [target]
-    else:
-        files = sorted(
-            f for f in glob.glob(os.path.join(target, "**", "*"), recursive=True)
-            if f.lower().endswith(MEDIA_EXTS)
-        )
-    if not files:
-        logging.error("No audio/video files found in %s", target)
-        return 0, 0, 0
-
-    logging.info("Found %d media file(s) for acoustic fingerprinting", len(files))
-    grand = processed = skipped = 0
-    for i, f in enumerate(files, 1):
-        already = db.file_has_acoustic(f)
-        if already and not force:
-            logging.info("Skipping already processed file: %s", os.path.basename(f))
-            skipped += 1
-            continue
-        if already and force:
-            logging.info("Re-processing file: %s", os.path.basename(f))
-        logging.info("[%d/%d] Processing %s", i, len(files), os.path.basename(f))
-        info = su.parse_filename_metadata(f, title, year)
-        if media_type:
-            info.media_type = media_type
-        grand += af.store_acoustic_fingerprints(db, info, f, ac_cfg, reindex=True)
-        processed += 1
-    return grand, processed, skipped
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Create phonetic fingerprint DB from subtitles.")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--show", help="Show/movie to download from OpenSubtitles, e.g. 'Matlock 1986'")
-    group.add_argument("--dir", help="Directory or file of local .srt/.vtt subtitles "
-                                     "(with --acoustic: directory of audio/video files)")
-    group.add_argument("--file", help="Single audio/video file to acoustically fingerprint "
-                                      "(implies --acoustic)")
+    group.add_argument("--dir", help="Directory or file of local .srt/.vtt subtitles")
+    group.add_argument("--file", help="Single .srt/.vtt subtitle file to fingerprint")
     group.add_argument("--list", action="store_true", help="List media already in the database")
     parser.add_argument("--title", help="Override title for local files")
     parser.add_argument("--year", type=int, help="Override start year")
     parser.add_argument("--type", choices=["tv", "movie"], help="Force media type")
     parser.add_argument("--limit", type=int, default=5, help="Max subtitles to download (show mode)")
-    parser.add_argument("--acoustic", action="store_true",
-                        help="Treat --dir as audio/video files and build ACOUSTIC "
-                             "(Chromaprint) fingerprints instead of phonetic ones")
     parser.add_argument("--force", action="store_true",
                         help="Re-process files even if they are already in the "
                              "database. By default, files that have already been "
@@ -234,27 +190,14 @@ def main(argv=None):
             print("\nStats:", db.stats())
             return 0
 
-        # Acoustic mode: --file always acoustic; --dir acoustic only with --acoustic
-        if args.file or (args.dir and args.acoustic):
-            import acoustic_fingerprint as af
-            ac_cfg = af.AcousticConfig.from_config(cfg)
-            target = args.file or args.dir
-            total, processed, skipped = run_acoustic(
-                target, db, ac_cfg, args.title, args.year, args.type, force=args.force)
-            print("\n" + "=" * 56)
-            print(f"Done. Stored acoustic fingerprints for {total} segment(s).")
-            print(f"Processed {processed} new files, skipped {skipped} existing files")
-            print("Database stats:", db.stats())
-            print(f"Database: {db_path}")
-            return 0
-
         if args.show:
             total, processed, skipped = run_show(
                 args.show, db, fp_cfg, cfg, args.limit, args.type,
                 year_override=args.year, force=args.force)
-        elif args.dir:
+        elif args.dir or args.file:
             total, processed, skipped = run_directory(
-                args.dir, db, fp_cfg, args.title, args.year, args.type, force=args.force)
+                args.dir or args.file, db, fp_cfg, args.title, args.year,
+                args.type, force=args.force)
         else:
             parser.print_help()
             return 1

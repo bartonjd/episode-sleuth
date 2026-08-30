@@ -1,6 +1,5 @@
 # =====================================================================
-# Building the reference database (create_fingerprint.py /
-# create_acoustic_fingerprint.py / fingerprint_audio.py)
+# Building the reference database (create_fingerprint.py)
 # =====================================================================
 # Core phonetic fingerprinting
 metaphone>=0.6
@@ -14,36 +13,24 @@ webvtt-py>=0.4.6
 requests>=2.28
 
 # =====================================================================
-# Identification ONLY (identify_audio.py)
+# Identification (identify_dvd_episodes.py)
 # =====================================================================
-# Speech-to-text is used exclusively to transcribe UNKNOWN audio at
-# identification time. The reference database is built from subtitles
-# (phonetic) and Chromaprint (acoustic), so NONE of the database-building
-# scripts need these. Skip them if you only build/index reference media.
+# Identification is purely dialogue-based (phonetic). Speech-to-text
+# transcribes a few short audio samples from each unknown file, which are
+# then matched against the subtitle-built reference database. The
+# database-building script does NOT need these - skip them if you only
+# build/index reference subtitles.
 vosk>=0.3.45              # offline STT (recommended) - requires a model download
 SpeechRecognition>=3.10  # optional online Google Web Speech engine
 
 # Audio handling for STT loading/transcription (requires system ffmpeg).
-# Also used to slice audio for identification.
+# ffmpeg/ffprobe are also used to extract the sampled audio windows.
 pydub>=0.25.1
-
-# Acoustic (Chromaprint/AcoustID) fingerprinting - sound-based identification
-# This uses the 'fpcalc' command-line tool DIRECTLY (no Python bindings needed),
-# so there is NO pyacoustid / chromaprint Python dependency to install.
-# Just install the fpcalc binary:
-#   Windows:        see INSTALL_WINDOWS.md (or run install_chromaprint.ps1)
-#   Debian/Ubuntu:  sudo apt-get install libchromaprint-tools
-#   macOS (brew):   brew install chromaprint
-# (If fpcalc lives somewhere unusual, set "acoustic.fpcalc_path" in config.json.)
-
-# Live microphone capture (only needed for identify_audio.py live mode)
-# pyaudio>=0.2.13        # install separately; needs system portaudio19-dev
 
 # =====================================================================
 # Modern desktop GUI (dvd_identifier_fluent.py)
 # =====================================================================
 # Windows 11 Fluent Design front-end over the identification engine.
 # Installing PySide6-Fluent-Widgets pulls in PySide6 automatically.
-# The classic Tkinter GUI (dvd_identifier_gui.py) needs none of these.
 PySide6-Fluent-Widgets>=1.11.0
 PySide6>=6.6

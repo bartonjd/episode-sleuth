@@ -1,7 +1,7 @@
 """
 stt_utils.py
 ============
-Speech-to-text helpers used by both fingerprint_audio.py and identify_audio.py.
+Speech-to-text helpers used by identify_dvd_episodes.py.
 
 Two engines are supported:
   * "vosk"   -> fully offline, no API key. Recommended. Requires a downloaded
@@ -19,6 +19,27 @@ import logging
 from typing import Optional, List, Tuple
 
 from pydub import AudioSegment
+import pydub.utils
+
+
+# ---------------------------------------------------------------------------
+# Suppress ffmpeg/ffprobe console windows on Windows
+# ---------------------------------------------------------------------------
+# pydub shells out to ffmpeg/ffprobe via subprocess.Popen (imported into
+# pydub.utils as ``Popen``). On Windows each of those spawns a flashing console
+# window. Wrap pydub.utils.Popen so it always passes CREATE_NO_WINDOW. This is a
+# no-op on non-Windows platforms and is applied only once.
+if os.name == "nt" and not getattr(pydub.utils, "_no_window_patched", False):
+    _CREATE_NO_WINDOW = 0x08000000
+    _orig_popen = pydub.utils.Popen
+
+    def _no_window_popen(*args, **kwargs):
+        if "creationflags" not in kwargs:
+            kwargs["creationflags"] = _CREATE_NO_WINDOW
+        return _orig_popen(*args, **kwargs)
+
+    pydub.utils.Popen = _no_window_popen
+    pydub.utils._no_window_patched = True
 
 
 def load_audio_mono16k(path: str, sample_rate: int = 16000) -> AudioSegment:

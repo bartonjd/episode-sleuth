@@ -6,25 +6,17 @@ video files ripped from DVDs (clean audio, but out of order, mislabelled, or
 with extended cuts) and you want to know *which episode each file is* so you can
 rename them for Plex.
 
-It is deliberately simpler than the general ``identify_audio.py`` Shazam-style
-tool. It does NOT do live microphone capture or full-file transcription. Instead
-it uses the strategy that is fastest and most accurate for CLEAN video files:
+It identifies each file purely by its DIALOGUE (phonetic matching):
 
-    MULTI-POINT ACOUSTIC SAMPLING (primary)
-      For every video it extracts a handful of short audio samples from spread
-      out timestamps (default 10%, 30%, 50%, 70%, 90% of the runtime), acoustic-
-      fingerprints each one, and matches them against the reference DB. Because
-      DVD audio is a near-clean copy of the broadcast/subtitle-timed audio, the
-      acoustic match is fast and precise. Sampling several points and taking a
-      *vote* makes the result robust to ad-break black frames, recap intros,
-      "previously on" segments and extended-cut inserts that would fool a single
-      sample.
-
-    SCOPED PHONETIC FALLBACK (only when acoustic is weak / ambiguous)
-      If the acoustic vote is low-confidence or the samples disagree, the tool
-      transcribes the same samples and runs phonetic (dialogue) matching scoped
-      to the top acoustic candidates, with an order-preserving fuzzy fallback.
-      This rescues files whose audio was re-encoded aggressively.
+    MULTI-POINT DIALOGUE SAMPLING
+      For every file it extracts a handful of short audio samples from spread
+      out timestamps (default 10%, 30%, 50%, 70%, 90% of the runtime),
+      transcribes each one with speech-to-text, concatenates the transcripts and
+      matches the dialogue against the reference DB built from subtitles. Sampling
+      several spread-out points makes the transcript representative of the whole
+      episode while only decoding a few seconds of audio per file (not the whole
+      file). Matching is exact phonetic-shingle first, with an order-preserving
+      fuzzy fallback that tolerates speech-to-text word errors.
 
     RUNTIME SANITY CHECK (optional, secondary)
       If you supply expected episode runtimes (``--runtimes runtimes.json``) the
@@ -32,12 +24,18 @@ it uses the strategy that is fastest and most accurate for CLEAN video files:
       runtime by more than a tolerance - a cheap way to catch extended cuts or a
       confidently-wrong match.
 
-Why NOT the other approaches (researched for this use case):
+    PARALLEL PROCESSING
+      Files are identified concurrently with a thread pool (``--workers``,
+      default 4). Each worker opens its own database connection and shares a
+      single speech-to-text engine, so a folder of rips is processed several
+      times faster on multi-core machines.
+
+Why dialogue matching (researched for this use case):
+  * Acoustic fingerprinting (Chromaprint) proved unreliable on DVD rips: it
+    produced very low-confidence, frequently wrong matches, because the DVD audio
+    encode differs enough from the reference to defeat acoustic hashing.
   * OCR on title cards  - most episodic TV (incl. Matlock) never shows the
     episode *title* on screen, so title-card OCR yields nothing useful.
-  * Visual/frame fingerprinting - heavier (frame extraction + perceptual hashing)
-    and needs a visual reference we do not have; the audio is already a strong,
-    cheap signal for clean rips.
   * Runtime-only matching - too coarse (many episodes share a runtime); good only
     as a secondary sanity check, which is exactly how it is used here.
 
@@ -54,8 +52,8 @@ Examples
     python identify_dvd_episodes.py --file "Disc1_Title3.mkv" --samples 7 \
         --csv out.csv --json out.json
 
-    # acoustic only (skip the phonetic fallback entirely - fastest)
-    python identify_dvd_episodes.py --dir ./rips --no-phonetic
+    # use 8 parallel workers on a big folder
+    python identify_dvd_episodes.py --dir ./rips --workers 8
 """
 from __future__ import annotations
 
@@ -64,17 +62,19 @@ import csv
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
+import threading
 import time
-from dataclasses import dataclass, field, asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-import acoustic_fingerprint as af
-from acoustic_fingerprint import AcousticConfig, FpcalcNotFoundError
 from fingerprint_core import (
     FingerprintDB, FingerprintConfig, MediaInfo,
-    load_config, setup_logging, fingerprint_text, score_matches,
+    FuzzyConfig, load_config, setup_logging, fingerprint_text, score_matches,
+    phonetic_token_stream, score_fuzzy_matches,
 )
 
 # Video/audio containers we will try to identify.
@@ -85,6 +85,62 @@ AUDIO_EXTS = {".m4a", ".wav", ".mp3", ".flac", ".aac", ".ogg"}
 MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
 
 DEFAULT_SAMPLE_POINTS = [0.10, 0.30, 0.50, 0.70, 0.90]
+
+# Serialises console prints from parallel workers so lines do not interleave.
+_print_lock = threading.Lock()
+
+
+def _log(msg: str) -> None:
+    with _print_lock:
+        print(msg)
+
+
+# ---------------------------------------------------------------------------
+# Subprocess helpers (ffmpeg / ffprobe) - no console windows on Windows
+# ---------------------------------------------------------------------------
+def _subprocess_flags() -> dict:
+    """Extra kwargs for subprocess calls so ffmpeg/ffprobe never flash a console
+    window on Windows. A no-op on other platforms."""
+    if os.name == "nt":
+        return {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
+    return {}
+
+
+def _probe_duration(path: str) -> float:
+    """Return media duration in seconds via ffprobe, or 0.0 on failure."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            **_subprocess_flags(),
+        )
+        return float(out.stdout.decode("utf-8", "ignore").strip())
+    except (ValueError, OSError):
+        return 0.0
+
+
+def _ffmpeg_extract(path: str, start_s: float, length_s: float,
+                    out_wav: str, sample_rate: int = 16000) -> bool:
+    """Extract a mono 16-bit PCM window to ``out_wav`` via ffmpeg.
+
+    Returns True on success. Only a few seconds of audio are decoded per call
+    (via ``-ss``/``-t``), so whole files are never fully loaded.
+    """
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-ss", f"{start_s:.3f}",
+             "-t", f"{length_s:.3f}", "-i", path,
+             "-ac", "1", "-ar", str(sample_rate), "-sample_fmt", "s16",
+             "-vn", out_wav],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            **_subprocess_flags(),
+        )
+        return proc.returncode == 0 and os.path.exists(out_wav) \
+            and os.path.getsize(out_wav) > 0
+    except OSError as exc:
+        logging.debug("  ffmpeg extract failed: %s", exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +153,10 @@ class EpisodeGuess:
     title: str
     season: Optional[int]
     episode: Optional[int]
-    votes: int                      # how many samples ranked it #1
-    total_samples: int              # samples that produced any match
-    mean_confidence: float          # mean acoustic confidence of the winning samples
-    method: str = "acoustic"        # acoustic | phonetic | fuzzy
+    votes: int                      # samples that contributed (kept for compat)
+    total_samples: int              # samples that produced any transcript
+    mean_confidence: float          # phonetic match confidence
+    method: str = "phonetic"        # phonetic | fuzzy
 
 
 @dataclass
@@ -132,11 +188,6 @@ class FileResult:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def episode_key(title: str, season: Optional[int],
-                episode: Optional[int]) -> Tuple[str, Optional[int], Optional[int]]:
-    return (title, season, episode)
-
-
 def episode_id_str(season: Optional[int], episode: Optional[int]) -> str:
     if season is not None and episode is not None:
         return f"S{season:02d}E{episode:02d}"
@@ -178,275 +229,209 @@ def sample_windows(duration: float, points: List[float],
 
 
 # ---------------------------------------------------------------------------
-# Stage 1: multi-point acoustic identification
+# Phonetic fuzzy fallback (self-contained; tolerant of STT word errors)
 # ---------------------------------------------------------------------------
-def acoustic_identify(path: str, db: FingerprintDB, ac_cfg: AcousticConfig,
-                      points: List[float], sample_len: float,
-                      top_n: int = 5) -> Tuple[float, List[EpisodeGuess],
-                                               Dict[int, EpisodeGuess]]:
-    """Sample the file at several points, acoustic-match each, and vote.
+def _load_candidate_streams(db: FingerprintDB, media_ids, fp_cfg):
+    """Load ``media_id -> (MediaInfo, ref_tokens, ref_starts)`` for the fuzzy
+    matcher. Only media rows that actually have a stored token stream are
+    returned."""
+    streams = {}
+    for mid in media_ids:
+        toks, starts = db.get_token_stream(mid)
+        if not toks:
+            continue
+        info = db.media_info(mid)
+        if info is None:
+            continue
+        streams[mid] = (info, toks, starts)
+    return streams
 
-    Returns (duration, ranked_guesses, best_acoustic_by_media_id).
+
+def run_fuzzy_stage(query_text: str, db: FingerprintDB,
+                    fp_cfg: FingerprintConfig, cfg: dict, candidate_ids):
+    """Order-preserving phonetic LCS matching as a fallback when exact
+    shingle-hash matching is weak (STT word errors).
+
+    Searches the supplied ``candidate_ids`` first (if any) and widens to every
+    media with a token stream if those yield nothing. Returns a list of
+    MatchResult (possibly empty) and the FuzzyConfig that was used.
     """
-    duration = af._probe_duration(path)
-    windows = sample_windows(duration, points, sample_len)
+    fuzzy_cfg = FuzzyConfig.from_config(cfg)
+    if not fuzzy_cfg.enabled or not query_text.strip():
+        return [], fuzzy_cfg
+    q_tokens = phonetic_token_stream(query_text, fp_cfg)
+    if len(q_tokens) < fuzzy_cfg.min_query_tokens:
+        logging.info("  fuzzy: query too short (%d < %d tokens), skipping",
+                     len(q_tokens), fuzzy_cfg.min_query_tokens)
+        return [], fuzzy_cfg
 
-    # top-1 vote tally (drives the final acoustic verdict)
-    votes: Dict[Tuple, int] = {}
-    conf_sum: Dict[Tuple, float] = {}
-    # candidate pool = every episode seen in ANY sample's top-N (drives the
-    # phonetic-fallback scope so it is not poisoned by a single wrong top-1)
-    best_conf: Dict[Tuple, float] = {}
-    meta: Dict[Tuple, MediaInfo] = {}
-    samples_with_match = 0
+    top_k = cfg.get("matching", {}).get("top_n_results", 5)
+    scope = list(candidate_ids) if candidate_ids else []
+    streams = _load_candidate_streams(db, scope, fp_cfg) if scope else {}
+    if not streams:
+        # widen to the whole token-stream corpus
+        streams = _load_candidate_streams(
+            db, db.all_token_stream_media_ids(), fp_cfg)
+    if not streams:
+        return [], fuzzy_cfg
+    results = score_fuzzy_matches(q_tokens, streams, fuzzy_cfg, top_n=top_k)
+    # only keep results that clear the configured LCS ratio
+    results = [r for r in results if r.confidence >= fuzzy_cfg.min_lcs_ratio]
+    if not results:
+        return [], fuzzy_cfg
 
+    # Margin gate: order-preserving LCS is biased toward longer / common-word
+    # references, so a short noisy query can leave the top two candidates almost
+    # tied (e.g. 0.87 vs 0.81). Only trust the winner when it clearly beats the
+    # runner-up; otherwise the match is ambiguous and we return nothing.
+    if len(results) >= 2:
+        margin = results[0].confidence - results[1].confidence
+        if margin < fuzzy_cfg.min_margin:
+            logging.info("  fuzzy: ambiguous (%.0f%% vs %.0f%%, margin %.0f%% < "
+                         "%.0f%%) - rejecting", results[0].confidence * 100,
+                         results[1].confidence * 100, margin * 100,
+                         fuzzy_cfg.min_margin * 100)
+            return [], fuzzy_cfg
+    return results, fuzzy_cfg
+
+
+# ---------------------------------------------------------------------------
+# Transcription of the sampled windows
+# ---------------------------------------------------------------------------
+def transcribe_samples(path: str, windows: List[Tuple[float, float]],
+                       transcriber, sample_rate: int) -> Tuple[str, int]:
+    """Extract each sample window with ffmpeg, transcribe it, and return the
+    concatenated transcript plus the number of windows that yielded speech."""
+    import stt_utils
+
+    texts: List[str] = []
+    got = 0
     tmpdir = tempfile.mkdtemp(prefix="dvdid_")
     try:
         for i, (start_s, length_s) in enumerate(windows):
             wav = os.path.join(tmpdir, f"s{i}.wav")
-            if not af._ffmpeg_extract(path, start_s, length_s, wav):
+            if not _ffmpeg_extract(path, start_s, length_s, wav, sample_rate):
                 logging.debug("  sample %d extract failed @%.1fs", i, start_s)
                 continue
             try:
-                _dur, raw = af.generate_fingerprint(wav, ac_cfg.fpcalc_path)
-            except FpcalcNotFoundError:
-                raise
+                seg = stt_utils.AudioSegment.from_file(wav)
+                t = transcriber.transcribe_segment(seg)
             except Exception as exc:  # pragma: no cover - defensive
-                logging.debug("  sample %d fingerprint failed: %s", i, exc)
-                continue
+                logging.debug("  sample %d transcribe failed: %s", i, exc)
+                t = ""
             finally:
                 if os.path.exists(wav):
                     os.remove(wav)
-            if not raw:
-                continue
-            results = af.match_acoustic(raw, db, ac_cfg, top_n=top_n)
-            if not results:
-                logging.info("  sample %d @%5.1fs -> no acoustic match",
-                             i + 1, start_s)
-                continue
-            samples_with_match += 1
-            # every result feeds the candidate pool ...
-            for res in results:
-                k = episode_key(res.media.title, res.media.season,
-                                res.media.episode)
-                best_conf[k] = max(best_conf.get(k, 0.0), res.confidence)
-                meta[k] = res.media
-            # ... but only the top-1 casts a vote for the final verdict
-            top = results[0]
-            key = episode_key(top.media.title, top.media.season,
-                              top.media.episode)
-            votes[key] = votes.get(key, 0) + 1
-            conf_sum[key] = conf_sum.get(key, 0.0) + top.confidence
-            logging.info("  sample %d @%5.1fs -> %s (%.0f%%)", i + 1, start_s,
-                         top.media.label(), top.confidence * 100)
+            if t:
+                texts.append(t)
+                got += 1
     finally:
         try:
             os.rmdir(tmpdir)
         except OSError:
             pass
-
-    guesses: List[EpisodeGuess] = []
-    for key, v in votes.items():
-        info = meta[key]
-        guesses.append(EpisodeGuess(
-            episode_id=episode_id_str(info.season, info.episode),
-            title=info.title, season=info.season, episode=info.episode,
-            votes=v, total_samples=samples_with_match,
-            mean_confidence=conf_sum[key] / v, method="acoustic",
-        ))
-    # rank by (votes, mean confidence)
-    guesses.sort(key=lambda g: (g.votes, g.mean_confidence), reverse=True)
-
-    # candidate pool: every episode key seen in any sample's top-N, ranked by
-    # its best acoustic confidence (used to scope the phonetic fallback).
-    pool = sorted(best_conf.keys(), key=lambda k: best_conf[k], reverse=True)
-    return duration, guesses, pool
-
-
-# ---------------------------------------------------------------------------
-# Stage 2: scoped phonetic fallback
-# ---------------------------------------------------------------------------
-def phonetic_fallback(path: str, db: FingerprintDB, fp_cfg: FingerprintConfig,
-                      cfg: dict, candidate_keys: List[Tuple],
-                      points: List[float], sample_len: float,
-                      transcriber) -> Optional[EpisodeGuess]:
-    """Transcribe the sampled windows and run phonetic matching scoped to the
-    acoustic candidates. Returns an EpisodeGuess or None."""
-    import stt_utils
-    from identify_audio import run_fuzzy_stage
-
-    duration = af._probe_duration(path)
-    windows = sample_windows(duration, points, sample_len)
-
-    audio_cfg = cfg.get("audio", {})
-    sr = audio_cfg.get("sample_rate", 16000)
-    try:
-        full = stt_utils.load_audio_mono16k(path, sr)
-    except Exception as exc:
-        logging.debug("  phonetic: could not load audio: %s", exc)
-        return None
-
-    texts: List[str] = []
-    for (start_s, length_s) in windows:
-        sub = full[int(start_s * 1000):int((start_s + length_s) * 1000)]
-        try:
-            t = transcriber.transcribe_segment(sub)
-        except Exception as exc:
-            logging.debug("  phonetic: transcribe failed: %s", exc)
-            t = ""
-        if t:
-            texts.append(t)
-    text = " ".join(texts).strip()
-    if not text:
-        logging.info("  phonetic fallback: no speech recognised")
-        return None
-    logging.info("  phonetic fallback transcript (%d chars): \"%s%s\"",
-                 len(text), text[:80], "..." if len(text) > 80 else "")
-
-    # scope to the acoustic candidates (subtitle rows for those episodes)
-    scope_ids = db.media_ids_for_episodes(candidate_keys) if candidate_keys else []
-
-    query_hashes = [h for (h, _s) in fingerprint_text(text, fp_cfg)]
-    rows = db.lookup(query_hashes, media_ids=scope_ids or None)
-    results = score_matches(query_hashes, rows, cfg.get("matching", {}))
-    if results:
-        m = results[0].media
-        return EpisodeGuess(
-            episode_id=episode_id_str(m.season, m.episode),
-            title=m.title, season=m.season, episode=m.episode,
-            votes=1, total_samples=1, mean_confidence=results[0].confidence,
-            method="phonetic",
-        )
-
-    # exact phonetic found nothing -> order-preserving fuzzy fallback
-    fuzzy_results, _fc = run_fuzzy_stage(text, db, fp_cfg, cfg, scope_ids)
-    if fuzzy_results:
-        m = fuzzy_results[0].media
-        return EpisodeGuess(
-            episode_id=episode_id_str(m.season, m.episode),
-            title=m.title, season=m.season, episode=m.episode,
-            votes=1, total_samples=1, mean_confidence=fuzzy_results[0].confidence,
-            method="fuzzy",
-        )
-    return None
+    return " ".join(texts).strip(), got
 
 
 # ---------------------------------------------------------------------------
 # Orchestration for one file
 # ---------------------------------------------------------------------------
-def identify_one(path: str, db: FingerprintDB, fp_cfg: FingerprintConfig,
-                 ac_cfg: AcousticConfig, cfg: dict, args,
-                 transcriber_box: dict,
+def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
+                 cfg: dict, args, transcriber,
                  runtimes: Optional[dict]) -> FileResult:
+    """Identify a single file by dialogue. Opens its own DB connection so it is
+    safe to run in a worker thread; the ``transcriber`` is shared (each
+    transcription builds its own recogniser internally)."""
     fname = os.path.basename(path)
     t0 = time.time()
-    print(f"\n>>> {fname}")
+    _log(f"\n>>> {fname}")
 
-    duration, guesses, pool = acoustic_identify(
-        path, db, ac_cfg, args.points, args.sample_len,
-        top_n=cfg.get("matching", {}).get("top_n_results", 5))
+    db = FingerprintDB(db_path)
+    try:
+        duration = _probe_duration(path)
+        windows = sample_windows(duration, args.points, args.sample_len)
 
-    review_conf = args.review_confidence
-    min_agree = args.min_agreement
+        sr = cfg.get("audio", {}).get("sample_rate", 16000)
+        best: Optional[EpisodeGuess] = None
+        notes_parts: List[str] = []
 
-    best = guesses[0] if guesses else None
-    runner_up = guesses[1] if len(guesses) > 1 else None
-
-    # Decide whether acoustic result is trustworthy.
-    acoustic_ok = (
-        best is not None
-        and best.total_samples > 0
-        and (best.votes / max(1, best.total_samples)) >= min_agree
-        and best.mean_confidence >= review_conf
-    )
-
-    use_phonetic = (not args.no_phonetic) and (not acoustic_ok)
-    if use_phonetic:
-        top_k = cfg.get("hybrid", {}).get("top_candidates_count", 5)
-        # Scope the phonetic search to the acoustic candidate POOL (union of
-        # every sample's top-N), not just the single top-1 - otherwise one wrong
-        # top-1 vote would force phonetic to confirm the wrong episode.
-        candidate_keys = list(pool[:top_k])
-        # If acoustic was very weak (below the reliable floor) its shortlist can
-        # not be trusted at all, so widen the phonetic search to the whole DB.
-        reliable_floor = cfg.get("hybrid", {}).get(
-            "acoustic_shortlist_reliable", 0.15)
-        if not best or best.mean_confidence < reliable_floor:
-            logging.info("  acoustic unreliable (best %.0f%% < %.0f%%) -> "
-                         "phonetic searches the FULL database",
-                         (best.mean_confidence * 100) if best else 0,
-                         reliable_floor * 100)
-            candidate_keys = []
+        if transcriber is None:
+            notes_parts.append("STT engine unavailable")
+            text, got = "", 0
         else:
-            logging.info("  acoustic weak/ambiguous -> phonetic fallback "
-                         "(scoped to %d candidate episode(s))",
-                         len(candidate_keys))
-        # lazily construct the transcriber only when first needed
-        if transcriber_box.get("t") is None and not transcriber_box.get("failed"):
-            try:
-                import stt_utils
-                transcriber_box["t"] = stt_utils.get_transcriber(cfg)
-            except Exception as exc:
-                logging.warning("  could not init STT engine: %s", exc)
-                transcriber_box["failed"] = True
-        transcriber = transcriber_box.get("t")
-        if transcriber is not None:
-            ph = phonetic_fallback(path, db, fp_cfg, cfg, candidate_keys,
-                                   args.points, args.sample_len, transcriber)
-            if ph is not None:
-                # prefer phonetic only if it's confident, else keep acoustic best
-                if ph.mean_confidence >= cfg.get("hybrid", {}).get(
-                        "phonetic_confirm_threshold", 0.15):
-                    best = ph
+            text, got = transcribe_samples(path, windows, transcriber, sr)
 
-    # Build result + review flag
-    notes_parts: List[str] = []
-    needs_review = False
-    if best is None:
-        needs_review = True
-        notes_parts.append("no match")
-    else:
-        agree_ratio = best.votes / max(1, best.total_samples) \
-            if best.method == "acoustic" else 1.0
-        if best.mean_confidence < review_conf:
-            needs_review = True
-            notes_parts.append(f"low confidence {best.mean_confidence:.0%}")
-        if best.method == "acoustic" and agree_ratio < min_agree:
-            needs_review = True
-            notes_parts.append(
-                f"samples disagree ({best.votes}/{best.total_samples})")
-        if runner_up and best.method == "acoustic" \
-                and runner_up.votes == best.votes:
-            needs_review = True
-            notes_parts.append(f"tie with {runner_up.episode_id}")
+        if text:
+            logging.info("  transcript (%d chars, %d/%d samples): \"%s%s\"",
+                         len(text), got, len(windows), text[:80],
+                         "..." if len(text) > 80 else "")
+            # Stage 1: exact phonetic shingle match against the whole DB.
+            query_hashes = [h for (h, _s) in fingerprint_text(text, fp_cfg)]
+            rows = db.lookup(query_hashes)
+            results = score_matches(query_hashes, rows, cfg.get("matching", {}))
+            if results:
+                m = results[0].media
+                best = EpisodeGuess(
+                    episode_id=episode_id_str(m.season, m.episode),
+                    title=m.title, season=m.season, episode=m.episode,
+                    votes=got, total_samples=len(windows),
+                    mean_confidence=results[0].confidence, method="phonetic",
+                )
+            else:
+                # Stage 2: order-preserving fuzzy fallback (tolerates STT errors)
+                fuzzy_results, _fc = run_fuzzy_stage(text, db, fp_cfg, cfg, [])
+                if fuzzy_results:
+                    m = fuzzy_results[0].media
+                    best = EpisodeGuess(
+                        episode_id=episode_id_str(m.season, m.episode),
+                        title=m.title, season=m.season, episode=m.episode,
+                        votes=got, total_samples=len(windows),
+                        mean_confidence=fuzzy_results[0].confidence,
+                        method="fuzzy",
+                    )
+        elif transcriber is not None:
+            notes_parts.append("no speech recognised")
 
-    # Optional runtime sanity check
-    if best is not None and runtimes:
-        exp = runtimes.get(best.episode_id) or runtimes.get(
-            best.episode_id.lower())
-        if exp:
-            diff = abs(duration / 60.0 - float(exp))
-            if diff > args.runtime_tolerance:
+        # Build review flag
+        review_conf = args.review_confidence
+        needs_review = False
+        if best is None:
+            needs_review = True
+            if not notes_parts:
+                notes_parts.append("no match")
+        else:
+            if best.mean_confidence < review_conf:
                 needs_review = True
-                notes_parts.append(
-                    f"runtime {duration/60:.0f}m vs expected {exp}m")
+                notes_parts.append(f"low confidence {best.mean_confidence:.0%}")
 
-    result = FileResult(
-        filename=fname, path=path, duration_s=duration, guess=best,
-        needs_review=needs_review, notes="; ".join(notes_parts),
-        elapsed_s=time.time() - t0,
-    )
+        # Optional runtime sanity check
+        if best is not None and runtimes:
+            exp = runtimes.get(best.episode_id) or runtimes.get(
+                best.episode_id.lower())
+            if exp:
+                diff = abs(duration / 60.0 - float(exp))
+                if diff > args.runtime_tolerance:
+                    needs_review = True
+                    notes_parts.append(
+                        f"runtime {duration/60:.0f}m vs expected {exp}m")
 
-    if best is not None:
-        flag = "  ⚠ REVIEW" if needs_review else "  ✓"
-        print(f"    => {best.episode_id}  {best.title}  "
-              f"[{best.method}, conf {best.mean_confidence:.0%}, "
-              f"{best.votes}/{best.total_samples} samples]{flag}")
-        if result.notes:
-            print(f"       note: {result.notes}")
-    else:
-        print("    => UNKNOWN  ⚠ REVIEW (no match)")
-    return result
+        result = FileResult(
+            filename=fname, path=path, duration_s=duration, guess=best,
+            needs_review=needs_review, notes="; ".join(notes_parts),
+            elapsed_s=time.time() - t0,
+        )
+
+        if best is not None:
+            flag = "  ! REVIEW" if needs_review else "  OK"
+            _log(f"    => {best.episode_id}  {best.title}  "
+                 f"[{best.method}, conf {best.mean_confidence:.0%}]{flag}")
+            if result.notes:
+                _log(f"       note: {result.notes}")
+        else:
+            _log(f"    => UNKNOWN  ! REVIEW ({result.notes or 'no match'})")
+        return result
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +472,7 @@ def parse_points(spec: str) -> List[float]:
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Batch-identify DVD-ripped episodes via multi-point "
-                    "acoustic sampling (with phonetic fallback).")
+                    "dialogue (phonetic) sampling.")
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--dir", help="directory of video files to identify")
     src.add_argument("--file", help="a single video file to identify")
@@ -502,14 +487,11 @@ def main(argv=None):
                          "'10,30,50,70,90' or '0.1,0.5,0.9'")
     ap.add_argument("--sample-len", type=float, default=12.0,
                     help="length of each audio sample in seconds (default 12)")
-    ap.add_argument("--no-phonetic", action="store_true",
-                    help="acoustic only; skip the phonetic fallback (fastest)")
+    ap.add_argument("--workers", type=int, default=4,
+                    help="number of files to identify in parallel (default 4)")
     ap.add_argument("--review-confidence", type=float, default=0.35,
                     help="flag for manual review below this confidence "
                          "(default 0.35)")
-    ap.add_argument("--min-agreement", type=float, default=0.5,
-                    help="fraction of samples that must agree on the winner "
-                         "before it is trusted (default 0.5)")
     ap.add_argument("--runtimes", help="optional JSON mapping episode_id -> "
                     "expected runtime in minutes, for a sanity check")
     ap.add_argument("--runtime-tolerance", type=float, default=4.0,
@@ -533,22 +515,15 @@ def main(argv=None):
     else:
         args.samples = len(args.points)
 
+    workers = max(1, args.workers)
+
     db_path = args.db or cfg.get("database", {}).get("path", "fingerprints.db")
     if not os.path.exists(db_path):
         print(f"ERROR: fingerprint DB not found: {db_path}", file=sys.stderr)
         print("Build one first from your subtitles, e.g.:\n"
               "  python create_fingerprint.py --dir /path/to/subs", file=sys.stderr)
         return 2
-    db = FingerprintDB(db_path)
     fp_cfg = FingerprintConfig.from_config(cfg)
-    ac_cfg = AcousticConfig.from_config(cfg)
-
-    # verify fpcalc up front so batch runs fail fast with a clear message
-    try:
-        af.check_fpcalc(ac_cfg.fpcalc_path)
-    except FpcalcNotFoundError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
 
     runtimes = None
     if args.runtimes:
@@ -563,27 +538,46 @@ def main(argv=None):
         print("No media files found.", file=sys.stderr)
         return 1
 
+    # One shared speech-to-text engine for every worker. Vosk's Model is safe to
+    # share across threads (each transcription builds its own recogniser).
+    transcriber = None
+    try:
+        import stt_utils
+        transcriber = stt_utils.get_transcriber(cfg)
+    except Exception as exc:
+        print(f"ERROR: could not initialise STT engine: {exc}", file=sys.stderr)
+        return 2
+
     print("=" * 70)
-    print("  DVD EPISODE IDENTIFICATION")
+    print("  DVD EPISODE IDENTIFICATION (dialogue / phonetic matching)")
     print("=" * 70)
     print(f"  reference DB : {db_path}")
     print(f"  files        : {len(media)}")
     print(f"  sample points: {', '.join(f'{p:.0%}' for p in args.points)} "
           f"({args.sample_len:.0f}s each)")
-    print(f"  phonetic     : {'off' if args.no_phonetic else 'on (fallback)'}")
+    print(f"  workers      : {workers}")
 
-    transcriber_box: dict = {}
     results: List[FileResult] = []
-    for path in media:
-        if not os.path.exists(path):
-            print(f"\n>>> {os.path.basename(path)}\n    (file not found, skipped)")
-            continue
-        try:
-            results.append(identify_one(path, db, fp_cfg, ac_cfg, cfg, args,
-                                        transcriber_box, runtimes))
-        except FpcalcNotFoundError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 2
+    existing = [p for p in media if os.path.exists(p)]
+    for p in media:
+        if not os.path.exists(p):
+            print(f"\n>>> {os.path.basename(p)}\n    (file not found, skipped)")
+
+    if workers == 1:
+        for path in existing:
+            results.append(identify_one(path, db_path, fp_cfg, cfg, args,
+                                        transcriber, runtimes))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {pool.submit(identify_one, path, db_path, fp_cfg, cfg, args,
+                                transcriber, runtimes): path
+                    for path in existing}
+            for fut in as_completed(futs):
+                results.append(fut.result())
+
+    # keep output order stable (input order) regardless of completion order
+    order = {p: i for i, p in enumerate(existing)}
+    results.sort(key=lambda r: order.get(r.path, 0))
 
     # summary
     print("\n" + "=" * 70)
@@ -594,13 +588,13 @@ def main(argv=None):
     print(f"  identified confidently : {len(ok)}/{len(results)}")
     for r in ok:
         g = r.to_row()
-        print(f"    ✓ {g['filename']:<45.45}  -> {g['episode_id']}  "
+        print(f"    OK {g['filename']:<45.45}  -> {g['episode_id']}  "
               f"({g['method']}, {g['confidence']:.0%})")
     if review:
         print(f"\n  needs manual review    : {len(review)}")
         for r in review:
             g = r.to_row()
-            print(f"    ⚠ {g['filename']:<45.45}  -> {g['episode_id']}  "
+            print(f"    !  {g['filename']:<45.45}  -> {g['episode_id']}  "
                   f"{('('+g['notes']+')') if g['notes'] else ''}")
 
     if args.csv:
@@ -610,7 +604,6 @@ def main(argv=None):
         write_json(results, args.json)
         print(f"  JSON written: {args.json}")
 
-    db.close()
     return 0
 
 
