@@ -45,7 +45,7 @@
 
   <Applications>
     <Application Id="DVDIdentifier"
-                 Executable="dvd_identifier_gui.exe"
+                 Executable="dvd_identifier_fluent.exe"
                  EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
           DisplayName="DVD Episode Identifier"

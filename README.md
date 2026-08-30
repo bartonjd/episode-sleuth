@@ -191,38 +191,42 @@ speed-up above comes from).
 | `selftest.py` | Quick end-to-end phonetic self-test |
 | `demo_hybrid.py` | Runnable, self-contained demonstration of the two-stage pipeline (correctness, ~66x scoping speed-up, fuzzy-on-degraded-STT, and the live mic code path / SQL fix) — see [Demonstration & benchmarks](#demonstration--benchmarks) |
 | `identify_dvd_episodes.py` | **Focused batch tool** for the common real use case: name a folder of DVD-ripped episodes for Plex. Multi-point acoustic sampling + voting, phonetic fallback, runtime sanity check, CSV/JSON output with manual-review flags. See **[USAGE_DVD.md](USAGE_DVD.md)**. |
-| `dvd_identifier_gui.py` | **Desktop GUI (Tkinter)** front end for the DVD identifier — point-and-click on Windows. See [Desktop GUI](#desktop-gui-windows) below. |
-| `DVD_Identifier.bat` | Double-click launcher for the GUI on Windows. |
+| `dvd_identifier_fluent.py` | **Desktop GUI (Fluent / Windows 11)** front end for the DVD identifier - point-and-click, dark theme, sidebar navigation. Built with PySide6-Fluent-Widgets. See [Desktop GUI](#desktop-gui-windows) below. |
+| `gui_config.py` | GUI settings store - persists the fingerprint DB path and options to `gui_config.json`. |
+| `fluent_launcher.bat` | Double-click launcher for the GUI on Windows (uses `pythonw`, no console window). |
 
 ## Desktop GUI (Windows)
 
 Prefer not to use the command line? Run the point-and-click app:
 
 ```bash
-python dvd_identifier_gui.py
+python dvd_identifier_fluent.py
 ```
 
-…or on Windows just **double-click `DVD_Identifier.bat`**.
+...or on Windows just **double-click `fluent_launcher.bat`** (it uses `pythonw`,
+so no console window appears).
 
-Tkinter ships with the standard Python installer, so there is nothing extra to
-install for the window itself — you only need the usual runtime dependencies
-(`pip install -r requirements.txt`) plus `ffmpeg` and `fpcalc` (see
+The GUI is built with **PySide6-Fluent-Widgets** for a native Windows 11 Fluent
+look (dark theme, sidebar navigation). It is installed automatically by
+`pip install -r requirements.txt`; you also need `ffmpeg` and `fpcalc` (see
 [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md)).
 
-The window has three tabs:
+The window has a sidebar with four sections:
 
-- **Identify** — pick your `fingerprints.db` and a folder (or single file) of
-  DVD rips, tweak samples / sample length / phonetic-fallback / review
-  threshold, then hit **Identify**. Results appear in a table with a colour-coded
-  *needs-review* flag. Buttons let you **Export CSV/JSON** or **Rename for Plex…**
-  (safe: it *copies* confidently-identified TV episodes into a
-  `Show/Season NN/Show - SxxEyy.ext` layout and never touches files flagged for
-  review).
-- **Build library** — grow the reference DB: add subtitle files (`.srt`/`.vtt`)
+- **Identify** - pick a folder (or single file) of DVD rips, tweak samples /
+  sample length / phonetic-fallback / review threshold, then hit **Identify**.
+  Results appear in a table with a colour-coded *needs-review* flag. Buttons let
+  you **Export CSV/JSON** or **Rename for Plex** (safe: it *copies*
+  confidently-identified TV episodes into a `Show/Season NN/Show - SxxEyy.ext`
+  layout and never touches files flagged for review).
+- **Build Library** - grow the reference DB: add subtitle files (`.srt`/`.vtt`)
   for phonetic matching and/or video/audio files for acoustic matching. It runs
   the existing `create_fingerprint.py` / `create_acoustic_fingerprint.py` tools
   and streams their output live.
-- **Log** — the full engine log for the last run, for troubleshooting.
+- **Settings** - set the `fingerprints.db` path and default options; they are
+  persisted to `gui_config.json` (via `gui_config.py`) and reused on the next
+  launch.
+- **Log** - the full engine log for the last run, for troubleshooting.
 
 Identification and library builds run on a background thread, so the window
 stays responsive; a progress bar shows activity.
@@ -266,7 +270,7 @@ Python on the target machine**:
 powershell -ExecutionPolicy Bypass -File .\build_msix.ps1 -Version 1.0.0.0
 ```
 
-This runs PyInstaller to bundle `dvd_identifier_gui.py` (plus `config.json` and
+This runs PyInstaller to bundle `dvd_identifier_fluent.py` (plus `config.json` and
 the Vosk model) into an app folder, packs it into an `.msix` with
 `packaging\AppxManifest.xml`, and signs it with a **self-signed** certificate.
 `ffmpeg.exe` and `fpcalc.exe` are bundled automatically if they are on `PATH`

@@ -4,8 +4,9 @@
 
 .DESCRIPTION
     Two stages:
-      1. PyInstaller bundles dvd_identifier_gui.py (plus config.json and the
-         Vosk model) into a self-contained folder app under dist\.
+      1. PyInstaller bundles dvd_identifier_fluent.py (the modern Fluent GUI,
+         plus config.json and the Vosk model) into a self-contained folder app
+         under dist\.
       2. MakeAppx packs that folder into an .msix using packaging\AppxManifest.xml,
          and SignTool signs it with a self-signed certificate so it can be
          installed locally (side-loaded).
@@ -58,7 +59,7 @@ if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
     throw "Version must have 4 numeric parts, e.g. 1.0.0.0 (got '$Version')."
 }
 
-$AppName   = "dvd_identifier_gui"
+$AppName   = "dvd_identifier_fluent"
 $DistApp   = Join-Path $ProjectDir "dist\$AppName"
 $Assets    = Join-Path $ProjectDir "packaging\assets"
 $Manifest  = Join-Path $ProjectDir "packaging\AppxManifest.xml"
@@ -138,10 +139,11 @@ $piArgs = @(
     "--icon", $Icon,
     "--add-data", "$((Join-Path $ProjectDir 'config.json'));.",
     "--collect-all", "vosk",
+    "--collect-all", "qfluentwidgets",
     "--collect-submodules", "metaphone"
 )
 if ($addModels) { $piArgs += @("--add-data", $addModels) }
-$piArgs += (Join-Path $ProjectDir "dvd_identifier_gui.py")
+$piArgs += (Join-Path $ProjectDir "dvd_identifier_fluent.py")
 
 & $bpy -m PyInstaller @piArgs | Out-Host
 if (-not (Test-Path (Join-Path $DistApp "$AppName.exe"))) {

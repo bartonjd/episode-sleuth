@@ -5,10 +5,9 @@ dvd_identifier_fluent.py
 A modern, Windows 11 "Fluent Design" desktop front end for the DVD episode
 identifier, built with PySide6 and PySide6-Fluent-Widgets.
 
-This is the good-looking sibling of dvd_identifier_gui.py (the plain Tkinter
-version, kept unchanged for comparison). It talks to exactly the same engine
-(identify_dvd_episodes.py + fingerprint_core.py + acoustic_fingerprint.py), so
-results are identical; only the presentation is different:
+It is the sole desktop front end for the project (the earlier Tkinter version
+has been retired). It talks to the same engine (identify_dvd_episodes.py +
+fingerprint_core.py + acoustic_fingerprint.py); the presentation is:
 
   * a dark, acrylic FluentWindow with an icon sidebar (Identify / Build library /
     Settings / Log),
