@@ -104,7 +104,7 @@ class QtLogHandler(logging.Handler):
 # ---------------------------------------------------------------------------
 class IdentifyWorker(QThread):
     rowReady = Signal(object)          # FileResult
-    progress = Signal(int, int, str)   # current, total, filename
+    progress = Signal(int, int, int, str)  # current, total, percent, filename
     finishedOk = Signal(int, int)      # total, needing_review
     failed = Signal(str)
     wasCancelled = Signal(int)         # how many completed before cancel
@@ -122,6 +122,14 @@ class IdentifyWorker(QThread):
     def run(self):
         try:
             cfg = load_config(self.params.config_path)
+            # Honour the Vosk model size chosen in Settings (small vs large).
+            cfg.setdefault("stt", {})
+            model_size = getattr(self.params, "vosk_model_size", "small")
+            cfg["stt"]["model_size"] = model_size
+            if model_size == "large":
+                # Let the size selector resolve the model dir; drop any hardcoded
+                # small path so the large model is used when it is downloaded.
+                cfg["stt"].pop("vosk_model_path", None)
             fp_cfg = FingerprintConfig.from_config(cfg)
 
             args = SimpleNamespace(
@@ -129,6 +137,7 @@ class IdentifyWorker(QThread):
                 sample_len=self.params.sample_len,
                 review_confidence=self.params.review_confidence,
                 runtime_tolerance=self.params.runtime_tolerance,
+                show_title=getattr(self.params, "show_title", None) or None,
             )
 
             if os.path.isdir(self.source):
@@ -173,7 +182,8 @@ class IdentifyWorker(QThread):
                 for fut in as_completed(futs):
                     path = futs[fut]
                     done += 1
-                    self.progress.emit(done, total, os.path.basename(path))
+                    pct = int(done * 100 / total) if total else 0
+                    self.progress.emit(done, total, pct, os.path.basename(path))
                     if self._cancel:
                         continue
                     try:
@@ -343,9 +353,13 @@ class IdentifyInterface(QWidget):
         self.progress = ProgressBar()
         self.progress.setVisible(False)
         self.progress.setFixedHeight(6)
+        self.progress_pct = CaptionLabel("0%")
+        self.progress_pct.setVisible(False)
+        self.progress_pct.setFixedWidth(38)
         actions.addWidget(self.identify_btn)
         actions.addWidget(self.cancel_btn)
         actions.addWidget(self.progress, 1)
+        actions.addWidget(self.progress_pct)
 
         self.rename_btn = PushButton("Rename for Plex", self, FIF.EDIT)
         self.export_json_btn = PushButton("Export JSON", self, FIF.SAVE_AS)
@@ -427,6 +441,8 @@ class IdentifyInterface(QWidget):
             max_workers=int(self.workers_spin.value()),
             review_confidence=float(self.review_spin.value()),
             runtime_tolerance=4.0,
+            vosk_model_size=self.cfg.get("vosk_model_size", "small"),
+            show_title=self.cfg.get("last_show_title", ""),
         )
 
         self.table.setRowCount(0)
@@ -435,6 +451,8 @@ class IdentifyInterface(QWidget):
         self.cancel_btn.setEnabled(True)
         self.progress.setVisible(True)
         self.progress.setValue(0)
+        self.progress_pct.setText("0%")
+        self.progress_pct.setVisible(True)
 
         self.state_tip = StateToolTip("Identifying", "Starting...", self.window())
         self.state_tip.move(self.state_tip.getSuitablePos())
@@ -455,11 +473,12 @@ class IdentifyInterface(QWidget):
             if self.state_tip:
                 self.state_tip.setContent("Cancelling...")
 
-    def _on_progress(self, cur: int, total: int, name: str):
+    def _on_progress(self, cur: int, total: int, pct: int, name: str):
         self.progress.setRange(0, total)
         self.progress.setValue(cur)
+        self.progress_pct.setText(f"{pct}%")
         if self.state_tip:
-            self.state_tip.setContent(f"{cur}/{total}  -  {name}")
+            self.state_tip.setContent(f"{cur}/{total} ({pct}%)  -  {name}")
 
     def _add_row(self, r: FileResult):
         self.results.append(r)
@@ -512,6 +531,7 @@ class IdentifyInterface(QWidget):
         self.identify_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress.setVisible(False)
+        self.progress_pct.setVisible(False)
         if self.state_tip:
             self.state_tip.setState(True)
             self.state_tip = None
@@ -659,6 +679,14 @@ class BuildInterface(QWidget):
         subs_file.clicked.connect(lambda: self._pick(
             self.subs_edit, False, "Subtitles (*.srt *.vtt);;All files (*.*)"))
         subs_card.add(self.subs_edit, subs_folder, subs_file)
+        subs_card.addWidget(CaptionLabel(
+            "TV show title (optional) - applied to every subtitle in this batch. "
+            "Improves matching accuracy by anchoring results to the show."))
+        self.show_title_edit = LineEdit()
+        self.show_title_edit.setPlaceholderText("e.g. Matlock")
+        self.show_title_edit.setText(self.cfg.get("last_show_title", ""))
+        self.show_title_edit.setClearButtonEnabled(True)
+        subs_card.addWidget(self.show_title_edit)
         self.subs_btn = PrimaryPushButton("Add subtitles to library", self, FIF.FONT)
         self.subs_btn.clicked.connect(self._build_subs)
         subs_card.addWidget(self.subs_btn)
@@ -690,11 +718,15 @@ class BuildInterface(QWidget):
         if not path or not os.path.exists(path):
             self._error("Pick a subtitle file or folder first.")
             return
-        self.cfg.update(last_subtitle_source=path)
+        show_title = self.show_title_edit.text().strip()
+        self.cfg.update(last_subtitle_source=path, last_show_title=show_title)
         self.cfg.save()
         flag = "--dir" if os.path.isdir(path) else "--file"
-        self._run([sys.executable, os.path.join(HERE, "create_fingerprint.py"),
-                   flag, path, "--db", self.win.current_db_path() or DEFAULT_DB])
+        cmd = [sys.executable, os.path.join(HERE, "create_fingerprint.py"),
+               flag, path, "--db", self.win.current_db_path() or DEFAULT_DB]
+        if show_title:
+            cmd += ["--show-title", show_title]
+        self._run(cmd)
 
     def _run(self, cmd: List[str]):
         if self.worker and self.worker.isRunning():
@@ -794,6 +826,28 @@ class SettingsInterface(QWidget):
         perf_card.addLayout(perf_grid)
         root.addWidget(perf_card)
 
+        # speech recognition card
+        stt_card = Card("Speech recognition (Vosk model)")
+        stt_grid = QGridLayout()
+        stt_grid.setHorizontalSpacing(24)
+        stt_grid.setVerticalSpacing(10)
+        stt_grid.addWidget(BodyLabel("Model size"), 0, 0)
+        self.model_combo = ComboBox()
+        self._model_labels = ["Small (39 MB)", "Large (1.8 GB)"]
+        self._model_values = ["small", "large"]
+        self.model_combo.addItems(self._model_labels)
+        cur_size = self.cfg.get("vosk_model_size", "small")
+        idx = self._model_values.index(cur_size) if cur_size in self._model_values else 0
+        self.model_combo.setCurrentIndex(idx)
+        stt_grid.addWidget(self.model_combo, 1, 0)
+        stt_grid.addWidget(
+            CaptionLabel("The large model is far more accurate on clean DVD-rip "
+                         "audio but uses ~1.8 GB. It downloads automatically the "
+                         "first time it is used."), 2, 0)
+        stt_grid.setColumnStretch(1, 1)
+        stt_card.addLayout(stt_grid)
+        root.addWidget(stt_card)
+
         save_row = QHBoxLayout()
         save_row.addStretch(1)
         self.save_btn = PrimaryPushButton("Save settings", self, FIF.SAVE)
@@ -825,6 +879,7 @@ class SettingsInterface(QWidget):
             engine_config_path=self.eng_edit.text().strip(),
             theme=self.theme_combo.currentText(),
             max_workers=int(self.workers_spin.value()),
+            vosk_model_size=self._model_values[self.model_combo.currentIndex()],
         )
         self.cfg.save()
         InfoBar.success("Saved", "Your settings have been saved.",

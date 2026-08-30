@@ -42,11 +42,21 @@ import subtitle_utils as su
 
 def fingerprint_subtitle_file(path: str, db: FingerprintDB, fp_cfg: FingerprintConfig,
                               default_title=None, default_year=None,
-                              media_type_override=None, reindex=True) -> int:
-    """Parse one subtitle file and add its fingerprints to the DB."""
+                              media_type_override=None, reindex=True,
+                              show_title=None) -> int:
+    """Parse one subtitle file and add its fingerprints to the DB.
+
+    ``show_title`` (optional) associates the episode with a TV show, overriding
+    the show title heuristically parsed from the filename. Passing it for a whole
+    folder (see ``--show-title``) scopes later identification to that one show,
+    which sharply reduces cross-show / cross-season false matches.
+    """
     info = su.parse_filename_metadata(path, default_title, default_year)
     if media_type_override:
         info.media_type = media_type_override
+    if show_title:
+        info.show_title = show_title
+        info.media_type = "tv"
 
     try:
         cues = su.parse_subtitle_file(path)
@@ -88,7 +98,8 @@ def fingerprint_subtitle_file(path: str, db: FingerprintDB, fp_cfg: FingerprintC
     return total
 
 
-def run_directory(directory, db, fp_cfg, title, year, media_type, force=False):
+def run_directory(directory, db, fp_cfg, title, year, media_type, force=False,
+                  show_title=None):
     if os.path.isfile(directory):
         files = [directory]
     else:
@@ -97,6 +108,8 @@ def run_directory(directory, db, fp_cfg, title, year, media_type, force=False):
         logging.error("No .srt/.vtt files found in %s", directory)
         return 0, 0, 0
     logging.info("Found %d subtitle file(s)", len(files))
+    if show_title:
+        logging.info("Associating all files with TV show: %s", show_title)
     grand = processed = skipped = 0
     for i, f in enumerate(files, 1):
         already = db.file_has_phonetic(f)
@@ -107,12 +120,14 @@ def run_directory(directory, db, fp_cfg, title, year, media_type, force=False):
         if already and force:
             logging.info("Re-processing file: %s", os.path.basename(f))
         logging.info("[%d/%d] Processing %s", i, len(files), os.path.basename(f))
-        grand += fingerprint_subtitle_file(f, db, fp_cfg, title, year, media_type)
+        grand += fingerprint_subtitle_file(f, db, fp_cfg, title, year, media_type,
+                                           show_title=show_title)
         processed += 1
     return grand, processed, skipped
 
 
-def run_show(query, db, fp_cfg, cfg, limit, media_type, year_override=None, force=False):
+def run_show(query, db, fp_cfg, cfg, limit, media_type, year_override=None,
+             force=False, show_title=None):
     # The year may come either inside the --show string ("Matlock 1986") or
     # via the separate --year flag. Combine both so the API year filter works.
     title, year = su._parse_query(query)
@@ -142,7 +157,8 @@ def run_show(query, db, fp_cfg, cfg, limit, media_type, year_override=None, forc
         if already and force:
             logging.info("Re-processing file: %s", os.path.basename(f))
         logging.info("[%d/%d] Processing %s", i, len(files), os.path.basename(f))
-        grand += fingerprint_subtitle_file(f, db, fp_cfg, title, year, media_type)
+        grand += fingerprint_subtitle_file(f, db, fp_cfg, title, year, media_type,
+                                           show_title=show_title or title)
         processed += 1
     return grand, processed, skipped
 
@@ -155,6 +171,10 @@ def main(argv=None):
     group.add_argument("--file", help="Single .srt/.vtt subtitle file to fingerprint")
     group.add_argument("--list", action="store_true", help="List media already in the database")
     parser.add_argument("--title", help="Override title for local files")
+    parser.add_argument("--show-title", dest="show_title",
+                        help="Associate all imported episodes with this TV show "
+                             "(batch import mode). Scopes later identification to "
+                             "the one show and reduces cross-show false matches.")
     parser.add_argument("--year", type=int, help="Override start year")
     parser.add_argument("--type", choices=["tv", "movie"], help="Force media type")
     parser.add_argument("--limit", type=int, default=5, help="Max subtitles to download (show mode)")
@@ -193,11 +213,12 @@ def main(argv=None):
         if args.show:
             total, processed, skipped = run_show(
                 args.show, db, fp_cfg, cfg, args.limit, args.type,
-                year_override=args.year, force=args.force)
+                year_override=args.year, force=args.force,
+                show_title=args.show_title)
         elif args.dir or args.file:
             total, processed, skipped = run_directory(
                 args.dir or args.file, db, fp_cfg, args.title, args.year,
-                args.type, force=args.force)
+                args.type, force=args.force, show_title=args.show_title)
         else:
             parser.print_help()
             return 1

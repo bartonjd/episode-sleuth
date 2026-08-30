@@ -226,6 +226,8 @@ class MediaInfo:
     season: Optional[int] = None
     episode: Optional[int] = None
     source: str = ""                # original file / url
+    show_title: Optional[str] = None    # TV show this episode belongs to
+    episode_title: Optional[str] = None  # parsed episode title (e.g. "The Diner")
 
     def label(self) -> str:
         y = f" ({self.year})" if self.year else ""
@@ -303,6 +305,19 @@ class FingerprintDB:
             """
         )
 
+        # --- Backward-compatible column migration ------------------------------
+        # ``show_title`` (the TV show an episode belongs to) and ``episode_title``
+        # (the parsed episode name, e.g. "The Diner") were added after the first
+        # release. SQLite cannot add a column via CREATE TABLE IF NOT EXISTS, so
+        # existing databases are migrated in place with ALTER TABLE. New columns
+        # default to NULL, so older rows keep working untouched.
+        cur.execute("PRAGMA table_info(media)")
+        existing_cols = {row["name"] for row in cur.fetchall()}
+        if "show_title" not in existing_cols:
+            cur.execute("ALTER TABLE media ADD COLUMN show_title TEXT")
+        if "episode_title" not in existing_cols:
+            cur.execute("ALTER TABLE media ADD COLUMN episode_title TEXT")
+
         self.conn.commit()
 
     def get_or_create_media(self, info: MediaInfo) -> int:
@@ -315,11 +330,22 @@ class FingerprintDB:
         )
         row = cur.fetchone()
         if row:
+            # Backfill the newer show_title / episode_title columns if this row
+            # was created before they existed (or was imported without them).
+            if info.show_title is not None or info.episode_title is not None:
+                cur.execute(
+                    "UPDATE media SET show_title=COALESCE(?, show_title), "
+                    "episode_title=COALESCE(?, episode_title) WHERE id=?",
+                    (info.show_title, info.episode_title, row["id"]),
+                )
+                self.conn.commit()
             return row["id"]
         cur.execute(
-            """INSERT INTO media (title, year, media_type, season, episode, source)
-               VALUES (?,?,?,?,?,?)""",
-            (info.title, info.year, info.media_type, info.season, info.episode, info.source),
+            """INSERT INTO media (title, year, media_type, season, episode, source,
+                                  show_title, episode_title)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (info.title, info.year, info.media_type, info.season, info.episode,
+             info.source, info.show_title, info.episode_title),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -391,7 +417,8 @@ class FingerprintDB:
         """Return a MediaInfo for a media id, or None if it does not exist."""
         cur = self.conn.cursor()
         cur.execute(
-            "SELECT title, year, media_type, season, episode, source "
+            "SELECT title, year, media_type, season, episode, source, "
+            "show_title, episode_title "
             "FROM media WHERE id=?", (media_id,))
         r = cur.fetchone()
         if not r:
@@ -399,6 +426,7 @@ class FingerprintDB:
         return MediaInfo(
             title=r["title"], year=r["year"], media_type=r["media_type"],
             season=r["season"], episode=r["episode"], source=r["source"] or "",
+            show_title=r["show_title"], episode_title=r["episode_title"],
         )
 
     def clear_media(self, info: MediaInfo) -> None:
@@ -480,7 +508,7 @@ class FingerprintDB:
             cur.execute(
                 f"""SELECT f.hash, f.shingle_size, f.start_ms, f.end_ms,
                            m.id AS media_id, m.title, m.year, m.media_type,
-                           m.season, m.episode
+                           m.season, m.episode, m.show_title, m.episode_title
                     FROM fingerprints f JOIN media m ON f.media_id = m.id
                     WHERE f.hash IN ({placeholders}){mid_clause}""",
                 params,
@@ -595,6 +623,8 @@ class MatchResult:
             "media_type": self.media.media_type,
             "season": self.media.season,
             "episode": self.media.episode,
+            "show_title": self.media.show_title,
+            "episode_title": self.media.episode_title,
             "label": self.media.label(),
             "confidence": round(self.confidence, 4),
             "matches": self.match_count,
@@ -602,13 +632,50 @@ class MatchResult:
         }
 
 
+def _contiguous_run_bonus(sorted_ts: List[int], gap_ms: int = 4000,
+                          cap: float = 0.20) -> float:
+    """Reward LONG contiguous runs of temporally-adjacent matches.
+
+    A genuine episode match produces many consecutive reference shingles that
+    match within a short time span (sustained dialogue overlap), whereas a
+    coincidental false match tends to be scattered single hits. We find the
+    longest run of matched timestamps whose neighbours are within ``gap_ms`` of
+    each other and map its length through a saturating exponential curve so
+    longer runs earn a progressively larger (but bounded) bonus.
+    """
+    if not sorted_ts:
+        return 0.0
+    import math
+    longest = run = 1
+    for i in range(1, len(sorted_ts)):
+        if sorted_ts[i] - sorted_ts[i - 1] <= gap_ms:
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 1
+    # saturating exponential: 0 at run length 1, ~0.63*cap at 6, ~0.86*cap at 11
+    return cap * (1.0 - math.exp(-max(0, longest - 1) / 5.0))
+
+
 def score_matches(query_hashes: List[str],
                   db_rows: List[sqlite3.Row],
-                  matching_cfg: dict) -> List[MatchResult]:
+                  matching_cfg: dict,
+                  query_weights: Optional[Dict[str, float]] = None
+                  ) -> List[MatchResult]:
     """Aggregate db lookup rows into ranked MatchResults.
 
     Confidence = (# query shingles that matched a media) / (# query shingles),
-    with a time-window bonus that rewards matches clustered in time.
+    with two bonuses that reward matches concentrated and contiguous in time:
+      * a densest-cluster (adjacent context window) bonus, and
+      * a longest-contiguous-run bonus that grows exponentially with the run
+        length (sustained dialogue overlap is far stronger evidence than the
+        same number of scattered single-word coincidences).
+
+    ``query_weights`` optionally maps each query hash to a weight in (0, 1].
+    When supplied the base confidence becomes a WEIGHTED coverage ratio, so
+    matches on shingles drawn from the informative middle of an episode
+    (see the time-weighting in identify_dvd_episodes) count for more than
+    matches near the low-signal opening/closing credits.
     """
     if not query_hashes:
         return []
@@ -616,6 +683,15 @@ def score_matches(query_hashes: List[str],
     query_set = set(query_hashes)
     top_n = matching_cfg.get("top_n_results", 5)
     window_ms = matching_cfg.get("time_window_seconds", 30) * 1000
+
+    # Total weight of the query (denominator of the coverage ratio). With no
+    # explicit weights every unique shingle counts as 1.0 (identical to the
+    # original unweighted behaviour).
+    if query_weights:
+        total_weight = sum(query_weights.get(h, 1.0) for h in query_set)
+    else:
+        total_weight = float(len(query_set))
+    total_weight = max(1e-9, total_weight)
 
     # group rows by media
     per_media: Dict[int, Dict] = {}
@@ -625,6 +701,8 @@ def score_matches(query_hashes: List[str],
             "info": MediaInfo(
                 title=row["title"], year=row["year"], media_type=row["media_type"],
                 season=row["season"], episode=row["episode"],
+                show_title=(row["show_title"] if "show_title" in row.keys() else None),
+                episode_title=(row["episode_title"] if "episode_title" in row.keys() else None),
             ),
             "hashes": set(),
             "timestamps": [],
@@ -637,7 +715,11 @@ def score_matches(query_hashes: List[str],
     for mid, bucket in per_media.items():
         matched = bucket["hashes"] & query_set
         match_count = len(matched)
-        base_conf = match_count / max(1, len(query_set))
+        if query_weights:
+            matched_weight = sum(query_weights.get(h, 1.0) for h in matched)
+        else:
+            matched_weight = float(match_count)
+        base_conf = matched_weight / total_weight
 
         # time-window bonus: find densest cluster of matched timestamps
         win_start = win_end = None
@@ -656,7 +738,10 @@ def score_matches(query_hashes: List[str],
             # normalize cluster density into a small bonus (max +0.25)
             cluster_bonus = min(0.25, (best / max(1, match_count)) * 0.25)
 
-        confidence = min(1.0, base_conf + cluster_bonus)
+        # longest-contiguous-run bonus (sustained dialogue overlap)
+        run_bonus = _contiguous_run_bonus(ts)
+
+        confidence = min(1.0, base_conf + cluster_bonus + run_bonus)
         results.append(MatchResult(
             media=bucket["info"], media_id=mid, confidence=confidence,
             match_count=match_count, query_count=len(query_set),

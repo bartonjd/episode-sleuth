@@ -36,6 +36,8 @@ DEFAULTS: Dict[str, Any] = {
     "sample_length": 12.0,
     "max_workers": 4,           # files identified in parallel
     "review_confidence": 0.35,
+    "vosk_model_size": "small",  # "small" (~40MB) | "large" (~1.8GB, accurate)
+    "last_show_title": "",      # last TV show used for batch library import
     "theme": "Dark",            # "Dark" | "Light" | "Auto"
     "theme_color": "#0078d4",   # Windows 11 accent blue
 }

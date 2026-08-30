@@ -31,22 +31,100 @@ Cue = Tuple[int, int, str]
 # ---------------------------------------------------------------------------
 
 _SE_PATTERNS = [
-    re.compile(r"[Ss](\d{1,2})[ ._-]?[Ee](\d{1,3})"),          # S01E02
+    # S01E02, and multi-episode S01E01E02 (the extra E-numbers are captured so a
+    # range can be detected; we key the media on the FIRST episode number).
+    re.compile(r"[Ss](\d{1,2})[ ._-]?[Ee](\d{1,3})(?:[ ._-]?[Ee]\d{1,3})*"),
     re.compile(r"(\d{1,2})x(\d{2,3})"),                          # 1x02
     re.compile(r"[Ss]eason[ ._-]?(\d{1,2}).*?[Ee]pisode[ ._-]?(\d{1,3})", re.I),
 ]
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 
+# "103"-style compact SxxEyy where nothing else marks the boundary. Kept SEPARATE
+# from the patterns above (and only tried as a last resort in parse_episode_info)
+# because a bare 3-4 digit run is easily confused with a year or a resolution.
+_COMPACT_SE_RE = re.compile(r"(?<!\d)(\d)(\d{2})(?!\d)")
+
+# Release / rip junk tokens stripped by clean_subtitle_filename before any title
+# text is recovered. Matched case-insensitively as whole tokens.
+_JUNK_TOKENS = [
+    "dvdrip", "dvd", "bdrip", "brrip", "bluray", "blu-ray", "webrip", "web-dl",
+    "webdl", "web", "hdtv", "hdrip", "pdtv", "subrip", "srt", "vtt",
+    "x264", "x265", "h264", "h265", "hevc", "xvid", "divx", "avc",
+    "aac", "ac3", "dd5", "dd5.1", "dts", "mp3", "flac",
+    "720p", "1080p", "1080i", "480p", "2160p", "4k", "hd", "sd",
+    "10bit", "8bit", "hdr", "remux", "proper", "repack", "internal",
+    "amzn", "nf", "hulu", "dsnp", "atvp", "eng", "english",
+]
+_JUNK_RE = re.compile(r"\b(" + "|".join(re.escape(t) for t in _JUNK_TOKENS) + r")\b",
+                      re.IGNORECASE)
+
+
+def clean_subtitle_filename(filename: str) -> str:
+    """Return the base name with release/rip junk stripped.
+
+    Removes the extension, bracketed groups ([...], {...}), common release-group
+    and codec/quality tokens (dvdrip, x264, web-dl, 1080p, ...), then collapses
+    the leftover separators to single spaces. The result is a human-readable
+    string like "Matlock (1986) - S01E04 - The Stripper" suitable for both
+    episode-number parsing and episode-title recovery.
+    """
+    base = os.path.splitext(os.path.basename(filename))[0]
+    # drop bracketed / braced groups outright (release tags, checksums, etc.)
+    base = re.sub(r"[\[\{].*?[\]\}]", " ", base)
+    # a trailing "-GROUP" release tag (e.g. "...-FLEET")
+    base = re.sub(r"-[A-Za-z0-9]{2,}$", " ", base)
+    # remove the junk tokens
+    base = _JUNK_RE.sub(" ", base)
+    # normalise dots/underscores that release names use as separators
+    base = re.sub(r"[._]+", " ", base)
+    base = re.sub(r"\s{2,}", " ", base).strip(" -_.")
+    return base
+
+
+def parse_episode_info(filename: str) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+    """Extract (season, episode, episode_title) from a subtitle/video filename.
+
+    Understands ``S01E03``, ``1x03``, ``Season 1 Episode 3``, multi-episode
+    ``S01E01E02`` (keyed on the first episode) and, as a last resort, a compact
+    ``103`` form. The episode title is whatever readable text follows the
+    season/episode marker (with junk stripped), e.g.
+    ``Matlock (1986) - S01E04 - The Stripper`` -> (1, 4, "The Stripper").
+    Returns ``(None, None, None)`` when nothing episode-like is found.
+    """
+    cleaned = clean_subtitle_filename(filename)
+    season = episode = None
+    match_end = None
+    for pat in _SE_PATTERNS:
+        m = pat.search(cleaned)
+        if m:
+            season, episode = int(m.group(1)), int(m.group(2))
+            match_end = m.end()
+            break
+
+    if season is None:
+        # last resort: a bare "103" (S1E03) not adjacent to a 4-digit year
+        m = _COMPACT_SE_RE.search(cleaned)
+        if m and not _YEAR_RE.search(m.group(0)):
+            season, episode = int(m.group(1)), int(m.group(2))
+            match_end = m.end()
+
+    episode_title = None
+    if match_end is not None:
+        tail = cleaned[match_end:]
+        # remove a leading year in parentheses and separator punctuation
+        tail = re.sub(r"^\s*[-_.]+\s*", " ", tail)
+        tail = _YEAR_RE.sub(" ", tail)
+        tail = re.sub(r"[-_.]+", " ", tail)
+        tail = re.sub(r"\s{2,}", " ", tail).strip(" -_.")
+        if tail:
+            episode_title = tail
+    return season, episode, episode_title
+
 
 def parse_filename_metadata(filename: str, default_title: Optional[str] = None,
                             default_year: Optional[int] = None) -> MediaInfo:
     base = os.path.splitext(os.path.basename(filename))[0]
-    season = episode = None
-    for pat in _SE_PATTERNS:
-        m = pat.search(base)
-        if m:
-            season, episode = int(m.group(1)), int(m.group(2))
-            break
+    season, episode, episode_title = parse_episode_info(filename)
 
     year = default_year
     ym = _YEAR_RE.search(base)
@@ -65,8 +143,12 @@ def parse_filename_metadata(filename: str, default_title: Optional[str] = None,
         title = re.sub(r"[._-]+", " ", cut).strip() or base
 
     media_type = "tv" if (season is not None or episode is not None) else "movie"
+    # For a TV episode the show title defaults to the parsed/overridden title;
+    # callers (e.g. create_fingerprint --show-title) may override it explicitly.
+    show_title = title if media_type == "tv" else None
     return MediaInfo(title=title, year=year, media_type=media_type,
-                     season=season, episode=episode, source=filename)
+                     season=season, episode=episode, source=filename,
+                     show_title=show_title, episode_title=episode_title)
 
 
 # ---------------------------------------------------------------------------

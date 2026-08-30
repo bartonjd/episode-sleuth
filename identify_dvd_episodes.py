@@ -299,12 +299,17 @@ def run_fuzzy_stage(query_text: str, db: FingerprintDB,
 # Transcription of the sampled windows
 # ---------------------------------------------------------------------------
 def transcribe_samples(path: str, windows: List[Tuple[float, float]],
-                       transcriber, sample_rate: int) -> Tuple[str, int]:
-    """Extract each sample window with ffmpeg, transcribe it, and return the
-    concatenated transcript plus the number of windows that yielded speech."""
+                       transcriber, sample_rate: int
+                       ) -> Tuple[List[Tuple[float, str]], int]:
+    """Extract each sample window with ffmpeg and transcribe it.
+
+    Returns ``(per_window, got)`` where ``per_window`` is a list of
+    ``(start_s, text)`` for every window that produced speech (start time kept so
+    the caller can time-weight each sample), and ``got`` is that count.
+    """
     import stt_utils
 
-    texts: List[str] = []
+    per_window: List[Tuple[float, str]] = []
     got = 0
     tmpdir = tempfile.mkdtemp(prefix="dvdid_")
     try:
@@ -323,14 +328,118 @@ def transcribe_samples(path: str, windows: List[Tuple[float, float]],
                 if os.path.exists(wav):
                     os.remove(wav)
             if t:
-                texts.append(t)
+                per_window.append((start_s, t))
                 got += 1
     finally:
         try:
             os.rmdir(tmpdir)
         except OSError:
             pass
-    return " ".join(texts).strip(), got
+    return per_window, got
+
+
+# ---------------------------------------------------------------------------
+# Confidence enhancement helpers
+# ---------------------------------------------------------------------------
+def _time_weight(fraction: float) -> float:
+    """Weight a sample by WHERE in the runtime it was taken.
+
+    Dialogue from the informative middle of an episode (roughly 20%-80% of the
+    runtime) is the strongest identity signal; the opening and closing minutes
+    are dominated by theme music, credits and recurring boilerplate that match
+    many episodes. Samples in [0.2, 0.8] get full weight (1.0) and weight falls
+    off linearly to 0.6 at the very start / end.
+    """
+    if 0.2 <= fraction <= 0.8:
+        return 1.0
+    if fraction < 0.2:
+        return 0.6 + (fraction / 0.2) * 0.4
+    return 0.6 + ((1.0 - fraction) / 0.2) * 0.4
+
+
+def _build_weighted_query(per_window: List[Tuple[float, str]], duration: float,
+                          fp_cfg: FingerprintConfig
+                          ) -> Tuple[List[str], Dict[str, float]]:
+    """Fingerprint each sample window separately and assign every shingle the
+    time-weight of the window it came from. Returns ``(all_hashes, weights)``
+    where ``weights`` maps hash -> max time-weight seen for that hash."""
+    all_hashes: List[str] = []
+    weights: Dict[str, float] = {}
+    for (start_s, wtext) in per_window:
+        frac = (start_s / duration) if duration > 0 else 0.5
+        w = _time_weight(frac)
+        for (h, _s) in fingerprint_text(wtext, fp_cfg):
+            all_hashes.append(h)
+            if w > weights.get(h, 0.0):
+                weights[h] = w
+    return all_hashes, weights
+
+
+def _norm_title(s: Optional[str]) -> str:
+    """Normalise a title for tolerant comparison (lowercase, alnum words)."""
+    if not s:
+        return ""
+    import re
+    s = re.sub(r"\(\d{4}\)", " ", s)          # drop a year in parentheses
+    s = re.sub(r"[^0-9a-zA-Z]+", " ", s.lower())
+    return " ".join(s.split()).strip()
+
+
+def apply_metadata_boosts(results, expected_show: Optional[str],
+                          query_episode_title: Optional[str]) -> List[str]:
+    """Boost candidate confidences using show / episode-title metadata, in place.
+
+      * show title exact match (candidate.show_title == expected_show): +0.15
+      * episode title fuzzy match vs the query filename's parsed title: up to
+        +0.10 scaled by similarity (>= 0.6 similarity required)
+
+    Results are re-sorted by the boosted confidence. Returns a short list of
+    human-readable boost notes for the winning candidate.
+    """
+    import difflib
+    exp_show = _norm_title(expected_show)
+    q_ep = _norm_title(query_episode_title)
+
+    winner_notes: List[str] = []
+    for r in results:
+        notes: List[str] = []
+        conf = r.confidence
+        cand_show = _norm_title(r.media.show_title)
+        if exp_show and cand_show and exp_show == cand_show:
+            conf = min(1.0, conf + 0.15)
+            notes.append("show match +15%")
+        cand_ep = _norm_title(r.media.episode_title)
+        if q_ep and cand_ep:
+            ratio = difflib.SequenceMatcher(None, q_ep, cand_ep).ratio()
+            if ratio >= 0.6:
+                add = 0.10 * ratio
+                conf = min(1.0, conf + add)
+                notes.append(f"episode title +{add * 100:.0f}%")
+        r.confidence = conf
+        r._boost_notes = notes  # type: ignore[attr-defined]
+
+    results.sort(key=lambda r: (r.confidence, r.match_count), reverse=True)
+    if results:
+        winner_notes = getattr(results[0], "_boost_notes", [])
+    return winner_notes
+
+
+def _adaptive_review_threshold(base: float, match_count: int,
+                               boosted: bool) -> float:
+    """Lower the review threshold when the evidence is strong.
+
+    A match backed by many shingles (long sustained dialogue overlap) or by a
+    confirmed show/episode-title match is trustworthy at a lower raw confidence
+    than a thin, unsupported match, so we relax the manual-review threshold
+    accordingly (never above the caller's configured value)."""
+    thr = base
+    if match_count >= 15:
+        thr = base * 0.70
+    elif match_count >= 8:
+        thr = base * 0.85
+    if boosted:
+        thr *= 0.85
+    return thr
 
 
 # ---------------------------------------------------------------------------
@@ -354,34 +463,59 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
         sr = cfg.get("audio", {}).get("sample_rate", 16000)
         best: Optional[EpisodeGuess] = None
         notes_parts: List[str] = []
+        boosted = False
+
+        # Metadata context for the confidence boosts: the show the user told us
+        # this batch belongs to (exact-match boost) and the episode title parsed
+        # from THIS file's own name, if any (fuzzy episode-title boost).
+        expected_show = getattr(args, "show_title", None)
+        try:
+            import subtitle_utils as _su
+            _qs, _qe, query_episode_title = _su.parse_episode_info(fname)
+        except Exception:
+            query_episode_title = None
 
         if transcriber is None:
             notes_parts.append("STT engine unavailable")
-            text, got = "", 0
+            per_window, got = [], 0
         else:
-            text, got = transcribe_samples(path, windows, transcriber, sr)
+            per_window, got = transcribe_samples(path, windows, transcriber, sr)
 
+        text = " ".join(t for _s, t in per_window).strip()
         if text:
             logging.info("  transcript (%d chars, %d/%d samples): \"%s%s\"",
                          len(text), got, len(windows), text[:80],
                          "..." if len(text) > 80 else "")
-            # Stage 1: exact phonetic shingle match against the whole DB.
-            query_hashes = [h for (h, _s) in fingerprint_text(text, fp_cfg)]
+            # Stage 1: exact phonetic shingle match, time-weighted per sample.
+            query_hashes, query_weights = _build_weighted_query(
+                per_window, duration, fp_cfg)
             rows = db.lookup(query_hashes)
-            results = score_matches(query_hashes, rows, cfg.get("matching", {}))
+            results = score_matches(query_hashes, rows, cfg.get("matching", {}),
+                                    query_weights=query_weights)
             if results:
+                notes = apply_metadata_boosts(
+                    results, expected_show, query_episode_title)
+                boosted = bool(notes)
                 m = results[0].media
+                if notes:
+                    notes_parts.append(", ".join(notes))
                 best = EpisodeGuess(
                     episode_id=episode_id_str(m.season, m.episode),
                     title=m.title, season=m.season, episode=m.episode,
                     votes=got, total_samples=len(windows),
                     mean_confidence=results[0].confidence, method="phonetic",
                 )
+                best_match_count = results[0].match_count
             else:
                 # Stage 2: order-preserving fuzzy fallback (tolerates STT errors)
                 fuzzy_results, _fc = run_fuzzy_stage(text, db, fp_cfg, cfg, [])
                 if fuzzy_results:
+                    notes = apply_metadata_boosts(
+                        fuzzy_results, expected_show, query_episode_title)
+                    boosted = bool(notes)
                     m = fuzzy_results[0].media
+                    if notes:
+                        notes_parts.append(", ".join(notes))
                     best = EpisodeGuess(
                         episode_id=episode_id_str(m.season, m.episode),
                         title=m.title, season=m.season, episode=m.episode,
@@ -389,10 +523,11 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                         mean_confidence=fuzzy_results[0].confidence,
                         method="fuzzy",
                     )
+                    best_match_count = fuzzy_results[0].match_count
         elif transcriber is not None:
             notes_parts.append("no speech recognised")
 
-        # Build review flag
+        # Build review flag (with an adaptive, evidence-aware threshold)
         review_conf = args.review_confidence
         needs_review = False
         if best is None:
@@ -400,7 +535,9 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
             if not notes_parts:
                 notes_parts.append("no match")
         else:
-            if best.mean_confidence < review_conf:
+            eff_review = _adaptive_review_threshold(
+                review_conf, best_match_count, boosted)
+            if best.mean_confidence < eff_review:
                 needs_review = True
                 notes_parts.append(f"low confidence {best.mean_confidence:.0%}")
 
@@ -492,6 +629,10 @@ def main(argv=None):
     ap.add_argument("--review-confidence", type=float, default=0.35,
                     help="flag for manual review below this confidence "
                          "(default 0.35)")
+    ap.add_argument("--show-title", dest="show_title", default=None,
+                    help="expected TV show for these files; candidates whose "
+                         "stored show title matches get a confidence boost "
+                         "(and thin cross-show matches are de-emphasised)")
     ap.add_argument("--runtimes", help="optional JSON mapping episode_id -> "
                     "expected runtime in minutes, for a sanity check")
     ap.add_argument("--runtime-tolerance", type=float, default=4.0,
