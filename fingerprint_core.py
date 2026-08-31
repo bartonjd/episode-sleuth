@@ -31,15 +31,54 @@ from metaphone import doublemetaphone
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 
+def load_typed_config(path: Optional[str] = None):
+    """Return the unified, typed :class:`config.AppConfig`.
+
+    Reads the engine file at ``path`` (or the default config.json) plus the
+    GUI's gui_config.json, merges shared keys, and validates. New code should
+    prefer this over the dict-returning :func:`load_config`.
+    """
+    from pathlib import Path as _Path
+    import config as _cfgmod
+
+    engine_path = _Path(path or DEFAULT_CONFIG_PATH)
+    engine_raw = _cfgmod._read_json(engine_path)
+    if not engine_raw:
+        engine_raw = _DEFAULT_ENGINE_CONFIG
+    gui_raw = _cfgmod._read_json(_cfgmod.HERE / _cfgmod.GUI_CONFIG_FILE)
+
+    engine = _cfgmod.EngineConfig.from_engine_dict(engine_raw)
+    gui = _cfgmod.GuiConfig.from_gui_dict(gui_raw)
+    if gui.vosk_model_size:
+        engine.vosk_model_size = gui.vosk_model_size
+    app = _cfgmod.AppConfig(
+        db_path=(gui.db_path or engine.db_path or "fingerprints.db"),
+        engine_config_path=gui.engine_config_path or "",
+        engine=engine,
+        gui=gui,
+    )
+    for msg in app.validate():
+        logging.warning("config: %s", msg)
+    return app
+
+
 def load_config(path: Optional[str] = None) -> dict:
-    """Load the JSON configuration file, falling back to sensible defaults."""
+    """Load the JSON configuration file, falling back to sensible defaults.
+
+    Backward-compatible wrapper: it still returns the plain config.json-shaped
+    dict that every existing engine caller expects. Internally it now delegates
+    to the typed :func:`load_typed_config` so there is a single source of truth.
+    """
     path = path or DEFAULT_CONFIG_PATH
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        return load_typed_config(path).engine.to_engine_dict()
+    except Exception as exc:  # never let config wiring break the engine
         logging.warning("Could not load config from %s (%s); using defaults.", path, exc)
-        return {
+        return dict(_DEFAULT_ENGINE_CONFIG)
+
+
+# Hardcoded engine defaults used when no config.json is present.
+_DEFAULT_ENGINE_CONFIG: dict = {
             "fingerprint": {
                 "shingle_sizes": [3, 4, 5],
                 "min_word_length": 2,

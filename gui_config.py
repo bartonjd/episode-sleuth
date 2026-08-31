@@ -44,16 +44,32 @@ DEFAULTS: Dict[str, Any] = {
 
 
 class GuiConfig:
-    """Dict-like wrapper around gui_config.json with typed getters."""
+    """Dict-like wrapper around gui_config.json with typed getters.
 
-    def __init__(self, path: str = GUI_CONFIG_PATH):
+    The public interface (``get`` / ``set`` / ``update`` / ``save`` / ``load`` /
+    ``as_dict``) is unchanged, so existing callers keep working. When
+    ``_migrate_to_unified`` is True the class delegates its on-disk storage to
+    the unified :class:`config.AppConfig` (which still reads and writes
+    gui_config.json), giving a single validated source of truth without changing
+    the file format.
+    """
+
+    # Opt-in delegation to the unified config system (config.AppConfig).
+    _migrate_to_unified: bool = False
+
+    def __init__(self, path: str = GUI_CONFIG_PATH,
+                 migrate_to_unified: bool | None = None):
         self.path = path
+        if migrate_to_unified is not None:
+            self._migrate_to_unified = migrate_to_unified
         self._data: Dict[str, Any] = dict(DEFAULTS)
         self.load()
 
     # ----- persistence -----
     def load(self) -> None:
         """Load settings from disk, merging over the defaults. Never raises."""
+        if self._migrate_to_unified and self._load_unified():
+            return
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 stored = json.load(fh)
@@ -68,11 +84,46 @@ class GuiConfig:
 
     def save(self) -> None:
         """Write the current settings to disk. Never raises."""
+        if self._migrate_to_unified and self._save_unified():
+            return
         try:
             with open(self.path, "w", encoding="utf-8") as fh:
                 json.dump(self._data, fh, indent=2)
         except OSError:
             pass
+
+    # ----- unified-config delegation (opt-in) -----
+    def _load_unified(self) -> bool:
+        """Populate ``self._data`` from config.AppConfig. Returns success."""
+        try:
+            from config import AppConfig
+            app = AppConfig.load()
+            gui = app.gui.to_gui_dict()
+            for key in DEFAULTS:
+                if key in gui:
+                    self._data[key] = gui[key]
+            # shared keys live on the root of AppConfig
+            self._data["db_path"] = app.db_path
+            self._data["engine_config_path"] = app.engine_config_path
+            return True
+        except Exception:
+            return False
+
+    def _save_unified(self) -> bool:
+        """Write ``self._data`` back through config.AppConfig. Returns success."""
+        try:
+            from config import AppConfig, GuiConfig as _GuiSchema
+            app = AppConfig.load()
+            known = set(_GuiSchema.__dataclass_fields__)  # type: ignore[attr-defined]
+            app.gui = _GuiSchema.from_gui_dict(
+                {k: v for k, v in self._data.items() if k in known})
+            app.db_path = self._data.get("db_path", app.db_path)
+            app.engine_config_path = self._data.get(
+                "engine_config_path", app.engine_config_path)
+            app.save()
+            return True
+        except Exception:
+            return False
 
     # ----- access -----
     def get(self, key: str, default: Any = None) -> Any:

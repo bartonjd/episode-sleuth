@@ -140,6 +140,76 @@ The included tests are lightweight smoke tests (packaging metadata + core
 imports) that run without a Vosk model, ffmpeg, or a populated database. Put
 larger test fixtures (sample subtitles, short clips) under `tests/fixtures/`.
 
+## Configuration
+
+Settings live in two JSON files at the project root, and a typed layer in
+`config.py` unifies and validates them:
+
+| File | Purpose | Managed by |
+| --- | --- | --- |
+| `config.json` | Engine/algorithm settings (STT, fingerprint, matching, audio, opensubtitles, logging) | `fingerprint_core.load_config()` |
+| `gui_config.json` | GUI preferences (theme, workers, last-used paths, model size) | `gui_config.GuiConfig` |
+
+### Typed config layer (`config.py`)
+
+`config.py` exposes three dataclasses:
+
+- `EngineConfig` - STT + database knobs (`stt_engine`, `vosk_model_size`,
+  `vosk_model_path`, `google_language`, `db_path`) plus the full `config.json`
+  payload preserved in `raw`.
+- `GuiConfig` - GUI preferences (theme, `max_workers`, last paths, etc.).
+- `AppConfig` - the root object combining `engine` + `gui` + shared `db_path`.
+
+```python
+from config import AppConfig
+
+app = AppConfig.load()          # reads config.json + gui_config.json, merges, validates
+print(app.db_path, app.engine.vosk_model_size, app.gui.theme)
+app.engine.vosk_model_size = "large"
+app.save()                      # writes both files back
+```
+
+Shared keys (`db_path`, `vosk_model_size`) can appear in both files; the GUI
+value wins because it reflects the user's most recent choice in the app.
+
+Example `config.json` (engine settings, abbreviated):
+
+```json
+{
+  "fingerprint": { "shingle_sizes": [3, 4, 5], "hash_algorithm": "md5" },
+  "database": { "path": "fingerprints.db" },
+  "matching": { "confidence_threshold": 0.15, "fuzzy": { "enabled": true } },
+  "stt": {
+    "engine": "vosk",
+    "vosk_model_path": "models/vosk-model-small-en-us-0.15",
+    "model_size": "small"
+  }
+}
+```
+
+### Validation
+
+`AppConfig.validate()` checks values and coerces invalid enums to safe
+defaults (non-fatal, logged as warnings):
+
+- `theme` must be one of `Dark`, `Light`, `Auto` (else `Dark`).
+- `vosk_model_size` must be `small` or `large` (else `small`).
+- `max_workers` must be an integer >= 1 (else 4).
+- Non-empty `engine_config_path` / `vosk_model_path` are reported if missing.
+
+### Backward compatibility and migration
+
+- Existing `config.json` and `gui_config.json` files load unchanged - the file
+  format is untouched, so nothing needs migrating by hand.
+- `load_config()` still returns the same `config.json`-shaped dict every engine
+  caller already expects; internally it now delegates to
+  `load_typed_config()` (which returns an `AppConfig`).
+- `GuiConfig` keeps its full dict-like interface. Passing
+  `GuiConfig(migrate_to_unified=True)` routes its storage through `AppConfig`
+  while still reading/writing `gui_config.json`.
+- `AppConfig.load(make_backups=True)` writes one-time `.bak` copies of the
+  source files before the first unified save.
+
 ## Desktop GUI (Windows)
 
 Prefer not to use the command line? Run the point-and-click app:
