@@ -112,7 +112,7 @@ def main():
 
     # ---- Step 3: fuzzy (order-preserving LCS) on a HEAVILY degraded query -----
     print("\n3) Fuzzy phonetic LCS match on heavily degraded transcript ...")
-    # Build candidate streams exactly like the hybrid identifier does.
+    # Build candidate streams exactly like the phonetic identifier does.
     streams = {}
     for mid in db.all_token_stream_media_ids():
         toks, starts = db.get_token_stream(mid)

@@ -24,6 +24,6 @@ if %errorlevel% neq 0 (
     echo The app exited with an error. Make sure Python 3 is installed and that
     echo you have run:  pip install -r requirements.txt
     echo The Fluent GUI also needs:  pip install PySide6-Fluent-Widgets
-    echo For fpcalc setup see INSTALL_WINDOWS.md
+    echo For Vosk speech-to-text model setup see INSTALL_WINDOWS.md
     pause
 )
