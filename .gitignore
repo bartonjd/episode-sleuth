@@ -42,3 +42,9 @@ Launch_DVD_Identifier.bat
 
 # GUI runtime config (user-specific paths/preferences)
 gui_config.json
+
+
+# Test fixtures are committed even though *.db / *.wav are ignored globally.
+!tests/fixtures/
+!tests/fixtures/*.db
+!tests/fixtures/*.wav

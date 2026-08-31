@@ -1,0 +1,79 @@
+1
+00:00:02,000 --> 00:00:05,500
+Your Honor, I object to this entire line of questioning.
+
+2
+00:00:06,000 --> 00:00:10,000
+The witness clearly has no knowledge of the events of that night.
+
+3
+00:00:11,000 --> 00:00:15,000
+Ben Matlock will prove that my client is innocent of all charges.
+
+4
+00:00:16,000 --> 00:00:20,000
+Ladies and gentlemen of the jury, please consider the evidence carefully.
+
+5
+00:00:21,000 --> 00:00:25,000
+The prosecution cannot place my client anywhere near the warehouse.
+
+6
+00:00:26,000 --> 00:00:30,000
+Detective, isn't it true that you never checked the security tapes?
+
+7
+00:00:31,000 --> 00:00:35,000
+I have practiced law in this county for over thirty years.
+
+8
+00:00:36,000 --> 00:00:40,000
+And in all that time I have never seen a case this poorly investigated.
+
+9
+00:00:41,000 --> 00:00:45,000
+The fingerprints on the weapon do not belong to the defendant.
+
+10
+00:00:46,000 --> 00:00:50,000
+Someone deliberately planted that evidence to frame an honest man.
+
+11
+00:00:51,000 --> 00:00:55,000
+When I am finished, the real killer will be sitting in that chair.
+
+12
+00:00:56,000 --> 00:01:00,000
+Now tell the court exactly what you saw on the evening of the fourth.
+
+13
+00:01:01,000 --> 00:01:05,000
+You testified earlier that the room was completely dark.
+
+14
+00:01:06,000 --> 00:01:10,000
+So how could you possibly identify the face of the intruder?
+
+15
+00:01:11,000 --> 00:01:15,000
+I submit that your entire testimony is nothing but speculation.
+
+16
+00:01:16,000 --> 00:01:20,000
+The truth, ladies and gentlemen, is far simpler than the district attorney claims.
+
+17
+00:01:21,000 --> 00:01:25,000
+My client was at home with his family the whole evening.
+
+18
+00:01:26,000 --> 00:01:30,000
+There is not a shred of physical evidence connecting him to this crime.
+
+19
+00:01:31,000 --> 00:01:35,000
+I ask you to return the only verdict that justice allows.
+
+20
+00:01:36,000 --> 00:01:40,000
+Find this innocent man not guilty and let him go home.

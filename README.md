@@ -172,22 +172,39 @@ dvd-identify --dir ./dvd_rips --db fingerprints.db
 dvd-gui
 ```
 
-### Running the tests
+### Testing
 
 Tests live in `tests/` and run with `pytest`:
 
 ```bash
-pip install -e ".[dev]"    # installs pytest
-pytest                     # runs the suite
-
-# or, without installing the extras:
-pip install pytest
-python -m pytest -q
+pip install -e ".[test]"       # installs pytest + pytest-mock
+pytest                         # run everything
+pytest -v                      # verbose
+pytest -m "not slow"           # skip the slow integration test
+pytest tests/test_matcher.py   # a single file
 ```
 
-The included tests are lightweight smoke tests (packaging metadata + core
-imports) that run without a Vosk model, ffmpeg, or a populated database. Put
-larger test fixtures (sample subtitles, short clips) under `tests/fixtures/`.
+The whole suite is **headless and offline** - no Vosk model, no ffmpeg and no
+network are required. Speech-to-text is mocked, and the reference database is
+built at test time from the small subtitle fixtures in `tests/fixtures/`, so it
+always matches the current schema.
+
+Coverage by module:
+
+| File | What it covers |
+| --- | --- |
+| `test_matcher.py` | `identify_one` - correct match on matching audio, low-confidence/review on non-matching audio, no-transcriber path (STT mocked) |
+| `test_scoring.py` | time-weighted coverage, contiguous-run bonus, +15% show / +10% episode-title boosts, fuzzy fallback on a degraded transcript |
+| `test_discovery.py` | `discover_media`, `parse_episode_info` (S01E03 / 1x03 / 103 / S01E01E02), `clean_subtitle_filename`, filename helpers |
+| `test_config.py` | `AppConfig` load/merge, enum validation, backward compat, save round-trip |
+| `test_subtitle_utils.py` | `.srt` / `.vtt` parsing, Double-Metaphone phonetic encoding, OpenSubtitles helper (network mocked) |
+| `test_integration.py` | end-to-end: build fingerprints -> identify -> export CSV/JSON (marked `slow`) |
+| `test_basic.py` | packaging metadata + core-import smoke tests |
+
+Fixtures (in `tests/fixtures/`): `sample.srt`, `sample_ep2.srt`, `sample.vtt`,
+`sample_audio.wav` (30 s synthetic clip) and a prebuilt `test_fingerprints.db`.
+Network calls (OpenSubtitles) are mocked; the live variant is skipped by
+default. Slow tests are marked with `@pytest.mark.slow`.
 
 ## Configuration
 

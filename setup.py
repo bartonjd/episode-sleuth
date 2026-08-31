@@ -85,7 +85,8 @@ setup(
     package_dir={"audio_fingerprint": "."},
     install_requires=_read_requirements(),
     extras_require={
-        "dev": ["pytest>=7.0"],
+        "test": ["pytest>=7.0", "pytest-mock>=3.10"],
+        "dev": ["pytest>=7.0", "pytest-mock>=3.10"],
     },
     entry_points={
         "console_scripts": [
