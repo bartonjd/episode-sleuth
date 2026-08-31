@@ -29,7 +29,8 @@ import sys
 # Ensure the flat engine modules on the project root are importable.
 from . import _ROOT  # noqa: F401  (side effect: puts project root on sys.path)
 
-from fingerprint_core import FingerprintConfig, load_config, setup_logging
+from fingerprint_core import FingerprintConfig, load_config
+from logging_config import setup_logging
 from engine.types import DEFAULT_SAMPLE_POINTS
 from engine.discovery import discover_media
 from engine.batch import batch_identify, write_csv, write_json

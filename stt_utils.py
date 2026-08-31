@@ -27,21 +27,10 @@ import pydub.utils
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Known Vosk English models keyed by a friendly "size". The small model is the
-# default (fast, ~40 MB); the large model is far more accurate on clean audio
-# (~1.8 GB) and is what you want to push DVD-rip confidence higher.
-VOSK_MODELS = {
-    "small": {
-        "dir": "vosk-model-small-en-us-0.15",
-        "url": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
-        "approx_mb": 40,
-    },
-    "large": {
-        "dir": "vosk-model-en-us-0.22",
-        "url": "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip",
-        "approx_mb": 1800,
-    },
-}
+# Known Vosk English models keyed by a friendly "size" (see constants.py). The
+# small model is the default (fast, ~40 MB); the large model is far more
+# accurate on clean audio (~1.8 GB) and pushes DVD-rip confidence higher.
+from constants import VOSK_MODELS, DEFAULT_MODELS_DIR  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +141,7 @@ def get_model_path(model_size: str = "small", models_dir: Optional[str] = None
     """
     size = (model_size or "small").lower()
     spec = VOSK_MODELS.get(size, VOSK_MODELS["small"])
-    base = models_dir or os.path.join(HERE, "models")
+    base = models_dir or os.path.join(HERE, DEFAULT_MODELS_DIR)
     path = os.path.join(base, spec["dir"])
     return path if os.path.isdir(path) else None
 
@@ -189,7 +178,7 @@ def download_vosk_model(model_size: str = "large",
     if spec is None:
         raise ValueError(f"Unknown Vosk model size: {model_size!r} "
                          f"(known: {', '.join(VOSK_MODELS)})")
-    base = models_dir or os.path.join(HERE, "models")
+    base = models_dir or os.path.join(HERE, DEFAULT_MODELS_DIR)
     os.makedirs(base, exist_ok=True)
     dest = os.path.join(base, spec["dir"])
     if os.path.isdir(dest) and not force:

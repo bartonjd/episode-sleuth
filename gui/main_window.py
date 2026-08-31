@@ -102,6 +102,10 @@ class MainWindow(FluentWindow):
 
 
 def main():
+    # Base console logging config (the GUI adds its own Qt log bridge on top
+    # in MainWindow._install_logging).
+    from logging_config import setup_logging
+    setup_logging(logging.INFO)
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)

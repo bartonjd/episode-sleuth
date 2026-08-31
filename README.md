@@ -109,6 +109,9 @@ cli/      thin command-line wrappers (argparse + I/O only)
   build_fingerprints.py  reference-DB builder (formerly create_fingerprint.py)
 
 gui/      desktop Fluent GUI - imports directly from engine/
+
+constants.py        shared defaults (DB / config / models paths, Vosk model catalog)
+logging_config.py   setup_logging() used by both the CLI and the GUI entry points
 ```
 
 - **`engine/`** contains all the real work and has no dependency on the CLI or
