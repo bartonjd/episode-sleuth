@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Two stages:
-      1. PyInstaller bundles dvd_identifier_fluent.py (the modern Fluent GUI,
+      1. PyInstaller bundles the Fluent GUI (audio_fingerprint.gui package,
          plus config.json and the Vosk model) into a self-contained folder app
          under dist\.
       2. MakeAppx packs that folder into an .msix using packaging\AppxManifest.xml,
@@ -140,10 +140,12 @@ $piArgs = @(
     "--add-data", "$((Join-Path $ProjectDir 'config.json'));.",
     "--collect-all", "vosk",
     "--collect-all", "qfluentwidgets",
-    "--collect-submodules", "metaphone"
+    "--collect-submodules", "metaphone",
+    "--collect-submodules", "audio_fingerprint",
+    "--paths", (Split-Path $ProjectDir -Parent)
 )
 if ($addModels) { $piArgs += @("--add-data", $addModels) }
-$piArgs += (Join-Path $ProjectDir "dvd_identifier_fluent.py")
+$piArgs += (Join-Path $ProjectDir "gui\__main__.py")
 
 & $bpy -m PyInstaller @piArgs | Out-Host
 if (-not (Test-Path (Join-Path $DistApp "$AppName.exe"))) {

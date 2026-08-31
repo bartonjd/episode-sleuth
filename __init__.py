@@ -29,7 +29,7 @@ __all__ = [
 
 def gui_main():
     """Launch the Fluent Design desktop GUI (entry point: ``dvd-gui``)."""
-    from dvd_identifier_fluent import main
+    from audio_fingerprint.gui import main
     return main()
 
 

@@ -111,7 +111,7 @@ the small English model:
 ## Running the app
 
 - **GUI:** double-click `fluent_launcher.bat`, or run
-  `python dvd_identifier_fluent.py`
+  `python -m audio_fingerprint.gui`
 - **CLI:** `python identify_dvd_episodes.py --dir "C:\path\to\dvd_rips"`
 
 See [README.md](README.md) and [USAGE_DVD.md](USAGE_DVD.md) for full usage.

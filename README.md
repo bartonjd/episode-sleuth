@@ -83,7 +83,7 @@ alongside the shingle hashes - no extra step is required.
 | `stt_utils.py` | Speech-to-text helpers (Vosk / Google) - used only during identification |
 | `identify_dvd_episodes.py` | **Focused batch tool** for the common real use case: name a folder of DVD-ripped episodes for Plex. Multi-point dialogue sampling + parallel workers, CSV/JSON output with manual-review flags. See **[USAGE_DVD.md](USAGE_DVD.md)**. |
 | `selftest.py` | Quick end-to-end phonetic self-test |
-| `dvd_identifier_fluent.py` | **Desktop GUI (Fluent / Windows 11)** front end for the DVD identifier - point-and-click, dark theme, sidebar navigation. Built with PySide6-Fluent-Widgets. See [Desktop GUI](#desktop-gui-windows) below. |
+| `gui/` | **Desktop GUI (Fluent / Windows 11)** package - the point-and-click, dark-theme, sidebar-navigation front end for the DVD identifier. Built with PySide6-Fluent-Widgets; run with `python -m audio_fingerprint.gui`. See [Desktop GUI](#desktop-gui-windows) below. |
 | `gui_config.py` | GUI settings store - persists the fingerprint DB path and options to `gui_config.json`. |
 | `fluent_launcher.bat` | Double-click launcher for the GUI on Windows (uses `pythonw`, no console window). |
 
@@ -102,7 +102,7 @@ pip install -e ".[dev]"
 ```
 
 Installing this way keeps the existing flat layout untouched - the scripts and
-the Windows launchers (`fluent_launcher.bat`, `python dvd_identifier_fluent.py`)
+the Windows launchers (`fluent_launcher.bat`, `python -m audio_fingerprint.gui`)
 keep working exactly as before.
 
 ### Console entry points
@@ -111,7 +111,7 @@ After `pip install -e .` three commands are available on your PATH:
 
 | Command | Runs | Equivalent to |
 |---------|------|---------------|
-| `dvd-gui` | Fluent desktop GUI | `python dvd_identifier_fluent.py` |
+| `dvd-gui` | Fluent desktop GUI | `python -m audio_fingerprint.gui` |
 | `dvd-identify` | Batch DVD identifier CLI | `python identify_dvd_episodes.py` |
 | `dvd-fingerprint` | Build reference DB from subtitles | `python create_fingerprint.py` |
 
@@ -215,7 +215,7 @@ defaults (non-fatal, logged as warnings):
 Prefer not to use the command line? Run the point-and-click app:
 
 ```bash
-python dvd_identifier_fluent.py
+python -m audio_fingerprint.gui
 ```
 
 ...or on Windows just **double-click `fluent_launcher.bat`** (it uses `pythonw`,
@@ -285,7 +285,7 @@ Python on the target machine**:
 powershell -ExecutionPolicy Bypass -File .\build_msix.ps1 -Version 1.0.0.0
 ```
 
-This runs PyInstaller to bundle `dvd_identifier_fluent.py` (plus `config.json`
+This runs PyInstaller to bundle the `audio_fingerprint.gui` package (plus `config.json`
 and the Vosk model) into an app folder, packs it into an `.msix` with
 `packaging\AppxManifest.xml`, and signs it with a **self-signed** certificate.
 `ffmpeg.exe` is bundled automatically if it is on `PATH` at build time (run

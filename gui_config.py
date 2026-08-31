@@ -2,7 +2,7 @@
 """
 gui_config.py
 =============
-Tiny persistence helper for the Fluent GUI (dvd_identifier_fluent.py).
+Tiny persistence helper for the Fluent GUI (audio_fingerprint.gui package).
 
 This is deliberately SEPARATE from the engine's config.json. The engine config
 holds algorithm/threshold settings that belong to the identification pipeline;

@@ -53,8 +53,18 @@ PY_MODULES = [
     "identify_dvd_episodes",
     "stt_utils",
     "gui_config",
-    "dvd_identifier_fluent",
     "selftest",
+]
+
+# The GUI now lives in the ``audio_fingerprint.gui`` sub-package. It is shipped
+# as a proper package (rather than a flat module) so that its absolute imports
+# resolve both when run in-place and when installed. package_dir maps the
+# top-level ``audio_fingerprint`` package to the project root, which is where
+# this file (and __init__.py) live.
+GUI_PACKAGES = [
+    "audio_fingerprint",
+    "audio_fingerprint.gui",
+    "audio_fingerprint.gui.pages",
 ]
 
 setup(
@@ -69,13 +79,15 @@ setup(
     license="MIT",
     python_requires=">=3.9",
     py_modules=PY_MODULES,
+    packages=GUI_PACKAGES,
+    package_dir={"audio_fingerprint": "."},
     install_requires=_read_requirements(),
     extras_require={
         "dev": ["pytest>=7.0"],
     },
     entry_points={
         "console_scripts": [
-            "dvd-gui = dvd_identifier_fluent:main",
+            "dvd-gui = audio_fingerprint.gui:main",
             "dvd-identify = identify_dvd_episodes:main",
             "dvd-fingerprint = create_fingerprint:main",
         ],
