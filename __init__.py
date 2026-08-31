@@ -35,11 +35,11 @@ def gui_main():
 
 def identify_main(argv=None):
     """Run the batch DVD identifier CLI (entry point: ``dvd-identify``)."""
-    from identify_dvd_episodes import main
+    from audio_fingerprint.cli.identify import main
     return main(argv)
 
 
 def fingerprint_main(argv=None):
     """Build reference fingerprints from subtitles (entry: ``dvd-fingerprint``)."""
-    from create_fingerprint import main
+    from audio_fingerprint.cli.build_fingerprints import main
     return main(argv)

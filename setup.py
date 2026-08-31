@@ -49,20 +49,22 @@ def _read_requirements():
 PY_MODULES = [
     "fingerprint_core",
     "subtitle_utils",
-    "create_fingerprint",
-    "identify_dvd_episodes",
+    "create_fingerprint",      # deprecated shim -> cli.build_fingerprints
+    "identify_dvd_episodes",   # deprecated shim -> engine + cli.identify
     "stt_utils",
     "gui_config",
     "selftest",
 ]
 
-# The GUI now lives in the ``audio_fingerprint.gui`` sub-package. It is shipped
-# as a proper package (rather than a flat module) so that its absolute imports
-# resolve both when run in-place and when installed. package_dir maps the
-# top-level ``audio_fingerprint`` package to the project root, which is where
-# this file (and __init__.py) live.
-GUI_PACKAGES = [
+# The core engine (``audio_fingerprint.engine``), the CLI wrappers
+# (``audio_fingerprint.cli``) and the desktop GUI (``audio_fingerprint.gui``)
+# are all shipped as proper sub-packages so their imports resolve both in-place
+# and when installed. package_dir maps the top-level ``audio_fingerprint``
+# package to the project root, which is where this file (and __init__.py) live.
+SUB_PACKAGES = [
     "audio_fingerprint",
+    "audio_fingerprint.engine",
+    "audio_fingerprint.cli",
     "audio_fingerprint.gui",
     "audio_fingerprint.gui.pages",
 ]
@@ -79,7 +81,7 @@ setup(
     license="MIT",
     python_requires=">=3.9",
     py_modules=PY_MODULES,
-    packages=GUI_PACKAGES,
+    packages=SUB_PACKAGES,
     package_dir={"audio_fingerprint": "."},
     install_requires=_read_requirements(),
     extras_require={
@@ -88,8 +90,8 @@ setup(
     entry_points={
         "console_scripts": [
             "dvd-gui = audio_fingerprint.gui:main",
-            "dvd-identify = identify_dvd_episodes:main",
-            "dvd-fingerprint = create_fingerprint:main",
+            "dvd-identify = audio_fingerprint.cli.identify:main",
+            "dvd-fingerprint = audio_fingerprint.cli.build_fingerprints:main",
         ],
     },
     classifiers=[

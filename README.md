@@ -9,7 +9,7 @@ against the database.
 
 ```
 BUILD REFERENCE DATABASE (no transcription needed):
-  subtitles (.srt/.vtt)  --> phonetic fingerprints   (create_fingerprint.py)
+  subtitles (.srt/.vtt)  --> phonetic fingerprints   (python -m audio_fingerprint.cli.build_fingerprints)
 
 IDENTIFY UNKNOWN AUDIO (transcription happens here, and only here):
   unknown audio --> transcribe (STT) --> phonetic match --> best result
@@ -70,22 +70,71 @@ result is only trusted when the top candidate beats the runner-up by
 system keeps the safer exact verdict rather than guessing. This is why fuzzy is a
 *fallback*, never an override of a confident exact match.
 
-The reference token streams are built automatically by `create_fingerprint.py`
-alongside the shingle hashes - no extra step is required.
+The reference token streams are built automatically by the reference-DB builder
+(`python -m audio_fingerprint.cli.build_fingerprints`) alongside the shingle
+hashes - no extra step is required.
 
 ## Components
 
 | File | Purpose |
 |------|---------|
+| `engine/` | **Core matching engine** package - the reusable, UI-agnostic library: media discovery, dialogue sampling/transcription, exact + fuzzy scoring, metadata boosts, batch orchestration, and CSV/JSON writers. Imported by the CLI and the GUI. See [Architecture](#architecture) below. |
+| `cli/` | **Thin command-line wrappers** package - argument parsing + I/O only, delegating all real work to `engine/`. `cli/identify.py` (batch identifier) and `cli/build_fingerprints.py` (reference-DB builder). |
 | `fingerprint_core.py` | Shared config, SQLite DB (phonetic tables), phonetic shingle pipeline, scoring |
-| `create_fingerprint.py` | Build the phonetic DB from subtitles (`--show`/`--dir`). No transcription. |
 | `subtitle_utils.py` | Subtitle parsing + OpenSubtitles download |
 | `stt_utils.py` | Speech-to-text helpers (Vosk / Google) - used only during identification |
-| `identify_dvd_episodes.py` | **Focused batch tool** for the common real use case: name a folder of DVD-ripped episodes for Plex. Multi-point dialogue sampling + parallel workers, CSV/JSON output with manual-review flags. See **[USAGE_DVD.md](USAGE_DVD.md)**. |
+| `create_fingerprint.py` | **Deprecated shim** - re-exports `cli/build_fingerprints.py`; emits a `DeprecationWarning`. Kept for backward compatibility. |
+| `identify_dvd_episodes.py` | **Deprecated shim** - re-exports the `engine/` API and `cli/identify.py`; emits a `DeprecationWarning`. Kept for backward compatibility. See **[USAGE_DVD.md](USAGE_DVD.md)**. |
 | `selftest.py` | Quick end-to-end phonetic self-test |
 | `gui/` | **Desktop GUI (Fluent / Windows 11)** package - the point-and-click, dark-theme, sidebar-navigation front end for the DVD identifier. Built with PySide6-Fluent-Widgets; run with `python -m audio_fingerprint.gui`. See [Desktop GUI](#desktop-gui-windows) below. |
 | `gui_config.py` | GUI settings store - persists the fingerprint DB path and options to `gui_config.json`. |
 | `fluent_launcher.bat` | Double-click launcher for the GUI on Windows (uses `pythonw`, no console window). |
+
+## Architecture
+
+The project is organized into three layers so that the core matching logic is
+reusable and independent of any front end:
+
+```
+engine/   core matching engine (reusable, UI-agnostic)
+  types.py       EpisodeGuess / FileResult dataclasses, media-extension constants
+  discovery.py   media discovery, filename parsing + suggested-name building
+  scoring.py     fuzzy staging, time weighting, weighted queries, metadata boosts,
+                 adaptive review threshold (re-exports score_matches from fingerprint_core)
+  matcher.py     audio probing/extraction, sampling, transcription, identify_one()
+  batch.py       batch_identify() orchestration (sequential + parallel), CSV/JSON writers
+
+cli/      thin command-line wrappers (argparse + I/O only)
+  identify.py            batch DVD identifier - delegates to engine.batch.batch_identify
+  build_fingerprints.py  reference-DB builder (formerly create_fingerprint.py)
+
+gui/      desktop Fluent GUI - imports directly from engine/
+```
+
+- **`engine/`** contains all the real work and has no dependency on the CLI or
+  the GUI. Import it directly in your own code:
+
+  ```python
+  from engine import identify_one, FileResult, batch_identify, discover_media
+  ```
+
+- **`cli/`** wrappers only parse arguments and handle input/output, then call
+  into `engine/`. Run them as modules:
+
+  ```bash
+  python -m audio_fingerprint.cli.identify --dir /path/to/episodes
+  python -m audio_fingerprint.cli.build_fingerprints --show "Matlock" --year 1986
+  ```
+
+- **`gui/`** imports the same `engine/` API used by the CLI, so the GUI and the
+  command line share one implementation.
+
+**Backward compatibility:** the original top-level scripts remain as thin
+re-export shims - `identify_dvd_episodes.py` re-exports the `engine/` API and
+`cli/identify.py`'s `main`, and `create_fingerprint.py` re-exports
+`cli/build_fingerprints.py`. Both still run and import exactly as before, but
+emit a `DeprecationWarning` pointing at the new locations. Update your imports to
+`from engine import ...` and your commands to `python -m audio_fingerprint.cli.*`.
 
 ## Development setup
 
@@ -112,8 +161,8 @@ After `pip install -e .` three commands are available on your PATH:
 | Command | Runs | Equivalent to |
 |---------|------|---------------|
 | `dvd-gui` | Fluent desktop GUI | `python -m audio_fingerprint.gui` |
-| `dvd-identify` | Batch DVD identifier CLI | `python identify_dvd_episodes.py` |
-| `dvd-fingerprint` | Build reference DB from subtitles | `python create_fingerprint.py` |
+| `dvd-identify` | Batch DVD identifier CLI | `python -m audio_fingerprint.cli.identify` |
+| `dvd-fingerprint` | Build reference DB from subtitles | `python -m audio_fingerprint.cli.build_fingerprints` |
 
 For example:
 
@@ -235,8 +284,8 @@ The window has a sidebar with four sections:
   confidently-identified TV episodes into a `Show/Season NN/Show - SxxEyy.ext`
   layout and never touches files flagged for review).
 - **Build Library** - grow the reference DB: add subtitle files (`.srt`/`.vtt`)
-  for phonetic matching. It runs `create_fingerprint.py` and streams its output
-  live.
+  for phonetic matching. It runs `python -m audio_fingerprint.cli.build_fingerprints`
+  and streams its output live.
 - **Settings** - set the `fingerprints.db` path and default options; they are
   persisted to `gui_config.json` (via `gui_config.py`) and reused on the next
   launch.

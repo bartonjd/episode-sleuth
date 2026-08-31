@@ -89,7 +89,9 @@ class BuildInterface(QWidget):
         self.cfg.update(last_subtitle_source=path, last_show_title=show_title)
         self.cfg.save()
         flag = "--dir" if os.path.isdir(path) else "--file"
-        cmd = [sys.executable, os.path.join(HERE, "create_fingerprint.py"),
+        # Run the builder as a module (BuildWorker runs with cwd=HERE, so the
+        # cli package resolves). This is the new home of create_fingerprint.py.
+        cmd = [sys.executable, "-m", "cli.build_fingerprints",
                flag, path, "--db", self.win.current_db_path() or DEFAULT_DB]
         if show_title:
             cmd += ["--show-title", show_title]

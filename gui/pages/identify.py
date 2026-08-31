@@ -21,7 +21,7 @@ from qfluentwidgets import (
     BodyLabel, TitleLabel, CaptionLabel,
 )
 
-from identify_dvd_episodes import (
+from engine import (
     FileResult, write_csv, write_json, episode_id_str,
 )
 

@@ -19,7 +19,7 @@ from PySide6.QtCore import QThread, Signal
 from audio_fingerprint.gui.constants import HERE
 
 # ---- engine (identical to the CLI path) ----
-from identify_dvd_episodes import (
+from engine import (
     FileResult, discover_media, identify_one,
 )
 from fingerprint_core import FingerprintConfig, load_config
