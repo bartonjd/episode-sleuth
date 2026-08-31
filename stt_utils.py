@@ -223,8 +223,10 @@ def get_transcriber(cfg: dict):
 
     For Vosk the model is selected in priority order:
       1. an explicit ``stt.vosk_model_path`` (backward compatible), else
-      2. ``stt.model_size`` ("small" / "large") resolved under ``models/``,
-         falling back to the small model directory.
+      2. ``stt.model_size`` ("small" / "large") resolved under ``models/``.
+    
+    If the selected model is missing, it is auto-downloaded (the large model
+    is ~1.8 GB so this may take a few minutes on first use).
     """
     stt_cfg = cfg.get("stt", {})
     engine = stt_cfg.get("engine", "vosk").lower()
@@ -234,8 +236,11 @@ def get_transcriber(cfg: dict):
         model_path = stt_cfg.get("vosk_model_path")
         if not model_path:
             resolved = get_model_path(model_size)
-            model_path = resolved or os.path.join(
-                "models", VOSK_MODELS.get(model_size, VOSK_MODELS["small"])["dir"])
+            if not resolved:
+                # Model missing - auto-download it before proceeding.
+                logging.warning("Vosk %s model not found, downloading...", model_size)
+                resolved = download_vosk_model(model_size)
+            model_path = resolved
         elif model_size == "large":
             # An explicit small path but a large size selected: prefer the large
             # model if it is actually downloaded, else keep the explicit path.
