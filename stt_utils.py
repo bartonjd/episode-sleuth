@@ -157,17 +157,32 @@ def get_model_path(model_size: str = "small", models_dir: Optional[str] = None
     return path if os.path.isdir(path) else None
 
 
+class ModelDownloadError(Exception):
+    """Raised when a Vosk model cannot be downloaded or unpacked."""
+
+
 def download_vosk_model(model_size: str = "large",
                         models_dir: Optional[str] = None,
-                        progress: Optional[Callable[[int, int], None]] = None
+                        progress: Optional[Callable[[int, int], None]] = None,
+                        force: bool = False,
+                        cancel_check: Optional[Callable[[], bool]] = None
                         ) -> str:
     """Download and unzip a Vosk model, returning the local model directory.
 
     ``model_size`` is "small" or "large" (the large ~1.8 GB model gives the best
-    accuracy on clean DVD audio). If the model already exists on disk it is
-    returned immediately without re-downloading. ``progress`` is an optional
-    callback ``(downloaded_bytes, total_bytes)`` for UI progress reporting
-    (``total_bytes`` may be 0 if the server does not send a length).
+    accuracy on clean DVD audio). ``progress`` is an optional callback
+    ``(downloaded_bytes, total_bytes)`` for UI progress reporting (``total_bytes``
+    may be 0 if the server does not send a length).
+
+    ``force`` re-downloads even if the model already exists (used by the
+    "Download / Update model" button to refresh to the latest published build).
+    ``cancel_check`` is an optional callable returning True to abort mid-download.
+
+    The download is written to a temporary file, its length and zip integrity are
+    verified before anything touches the models directory, and it is extracted to
+    a staging folder that is only swapped into place once complete. That way a
+    truncated or corrupt download can never leave a half-written model behind
+    (the cause of the "zip failed to initialise" error on the large model).
     """
     size = (model_size or "large").lower()
     spec = VOSK_MODELS.get(size)
@@ -177,45 +192,103 @@ def download_vosk_model(model_size: str = "large",
     base = models_dir or os.path.join(HERE, "models")
     os.makedirs(base, exist_ok=True)
     dest = os.path.join(base, spec["dir"])
-    if os.path.isdir(dest):
+    if os.path.isdir(dest) and not force:
         logging.info("Vosk %s model already present at %s", size, dest)
         return dest
 
     url = spec["url"]
     logging.info("Downloading Vosk %s model (~%d MB) from %s",
                  size, spec["approx_mb"], url)
-    tmp_zip = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
-    tmp_zip.close()
-    try:
-        with urllib.request.urlopen(url) as resp:  # nosec - fixed known host
-            total = int(resp.headers.get("Content-Length", 0) or 0)
-            done = 0
-            chunk = 1024 * 256
-            with open(tmp_zip.name, "wb") as fh:
-                while True:
-                    block = resp.read(chunk)
-                    if not block:
-                        break
-                    fh.write(block)
-                    done += len(block)
-                    if progress:
-                        progress(done, total)
 
-        # Extract into the models dir. The archive's top-level folder already
-        # matches spec["dir"], so extracting into ``base`` lands it correctly.
-        with zipfile.ZipFile(tmp_zip.name) as zf:
-            top = zf.namelist()[0].split("/")[0] if zf.namelist() else spec["dir"]
-            zf.extractall(base)
-        extracted = os.path.join(base, top)
-        if extracted != dest and os.path.isdir(extracted):
-            shutil.move(extracted, dest)
+    tmp_zip = tempfile.NamedTemporaryFile(suffix=".zip", delete=False,
+                                          dir=base)
+    tmp_zip.close()
+    staging = dest + ".partial"
+    total = 0
+    done = 0
+    try:
+        # ---- download to a temp file ----
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "dvd-identifier/1.0"})
+            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec
+                total = int(resp.headers.get("Content-Length", 0) or 0)
+                chunk = 1024 * 256
+                with open(tmp_zip.name, "wb") as fh:
+                    while True:
+                        if cancel_check and cancel_check():
+                            raise ModelDownloadError("Download cancelled.")
+                        block = resp.read(chunk)
+                        if not block:
+                            break
+                        fh.write(block)
+                        done += len(block)
+                        if progress:
+                            progress(done, total)
+        except ModelDownloadError:
+            raise
+        except Exception as exc:
+            raise ModelDownloadError(
+                f"Could not download the model from {url} ({exc}). "
+                "Check your internet connection and try again.") from exc
+
+        # ---- verify the download is complete and valid ----
+        if total and done < total:
+            raise ModelDownloadError(
+                f"Download incomplete: got {done} of {total} bytes. "
+                "The connection was likely interrupted - please try again.")
+
+        try:
+            with zipfile.ZipFile(tmp_zip.name) as zf:
+                bad = zf.testzip()  # returns first corrupt member, or None
+                if bad is not None:
+                    raise ModelDownloadError(
+                        f"The downloaded archive is corrupt (bad entry: {bad}). "
+                        "Please try downloading again.")
+                names = zf.namelist()
+                if not names:
+                    raise ModelDownloadError("The downloaded archive is empty.")
+                # top-level folder of the archive (skip any leading "./")
+                tops = {n.replace("\\", "/").lstrip("./").split("/")[0]
+                        for n in names if n.strip("/")}
+                top = spec["dir"] if spec["dir"] in tops else sorted(tops)[0]
+
+                # ---- extract to a clean staging dir, then swap in ----
+                if os.path.isdir(staging):
+                    shutil.rmtree(staging, ignore_errors=True)
+                stage_root = staging + "_x"
+                if os.path.isdir(stage_root):
+                    shutil.rmtree(stage_root, ignore_errors=True)
+                os.makedirs(stage_root, exist_ok=True)
+                zf.extractall(stage_root)
+        except zipfile.BadZipFile as exc:
+            raise ModelDownloadError(
+                "The downloaded file is not a valid zip archive - the download "
+                "was probably truncated. Please try again.") from exc
+
+        extracted = os.path.join(stage_root, top)
+        if not os.path.isdir(extracted):
+            raise ModelDownloadError(
+                "The archive did not contain the expected model folder.")
+
+        # Move extracted model to the final staging path, then atomically swap.
+        shutil.move(extracted, staging)
+        shutil.rmtree(stage_root, ignore_errors=True)
+        if os.path.isdir(dest):
+            shutil.rmtree(dest, ignore_errors=True)
+        os.replace(staging, dest)
+
         logging.info("Vosk %s model ready at %s", size, dest)
         return dest
     finally:
-        try:
-            os.remove(tmp_zip.name)
-        except OSError:
-            pass
+        for junk in (tmp_zip.name, staging, staging + "_x"):
+            try:
+                if os.path.isdir(junk):
+                    shutil.rmtree(junk, ignore_errors=True)
+                elif os.path.exists(junk):
+                    os.remove(junk)
+            except OSError:
+                pass
 
 
 def get_transcriber(cfg: dict):

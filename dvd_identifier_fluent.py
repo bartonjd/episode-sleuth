@@ -68,6 +68,18 @@ from fingerprint_core import FingerprintDB, FingerprintConfig, load_config
 
 from gui_config import GuiConfig
 
+# Speech-to-text helpers (Vosk model download + lookup). Imported defensively so
+# the GUI still launches even if an optional dependency is missing; the Settings
+# page degrades gracefully in that case.
+try:
+    import stt_utils
+    from stt_utils import ModelDownloadError
+except Exception:  # pragma: no cover - only if pydub/vosk deps are absent
+    stt_utils = None
+
+    class ModelDownloadError(Exception):
+        pass
+
 APP_TITLE = "DVD Episode Identifier"
 DEFAULT_DB = os.path.join(HERE, "fingerprints.db")
 DEFAULT_CONFIG = os.path.join(HERE, "config.json")
@@ -231,6 +243,47 @@ class BuildWorker(QThread):
         except Exception as exc:
             self.output.emit(f"ERROR: {exc}")
             self.done.emit(-1)
+
+
+class ModelDownloadWorker(QThread):
+    """Downloads (or re-downloads) a Vosk model off the GUI thread.
+
+    Emits byte-level progress so the Settings page can show a progress bar, and
+    a clear success/failure result. ``force=True`` always re-fetches the pinned
+    latest published build, which is how the "Re-download / Update" button
+    refreshes an already-installed model.
+    """
+    progress = Signal(int, int)   # downloaded_bytes, total_bytes (0 = unknown)
+    finishedOk = Signal(str)      # local model directory path
+    failed = Signal(str)          # human-readable error message
+
+    def __init__(self, model_size: str, force: bool = True):
+        super().__init__()
+        self.model_size = model_size
+        self.force = force
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        if stt_utils is None:
+            self.failed.emit(
+                "The speech-to-text module could not be loaded. Please make "
+                "sure the app's dependencies (pydub, vosk) are installed.")
+            return
+        try:
+            path = stt_utils.download_vosk_model(
+                self.model_size,
+                progress=lambda d, t: self.progress.emit(d, t),
+                force=self.force,
+                cancel_check=lambda: self._cancel,
+            )
+            self.finishedOk.emit(path)
+        except ModelDownloadError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # unexpected - still surface something useful
+            self.failed.emit(f"Unexpected error while downloading the model: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -849,8 +902,9 @@ class SettingsInterface(QWidget):
         # speech recognition card
         stt_card = Card("Speech recognition (Vosk model)")
         stt_grid = QGridLayout()
-        stt_grid.setHorizontalSpacing(24)
+        stt_grid.setHorizontalSpacing(16)
         stt_grid.setVerticalSpacing(10)
+
         stt_grid.addWidget(BodyLabel("Model size"), 0, 0)
         self.model_combo = ComboBox()
         self._model_labels = ["Small (39 MB)", "Large (1.8 GB)"]
@@ -859,11 +913,30 @@ class SettingsInterface(QWidget):
         cur_size = self.cfg.get("vosk_model_size", "small")
         idx = self._model_values.index(cur_size) if cur_size in self._model_values else 0
         self.model_combo.setCurrentIndex(idx)
-        stt_grid.addWidget(self.model_combo, 1, 0)
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        stt_grid.addWidget(self.model_combo, 0, 1)
+
+        # Download / update button + live status live to the right of the combo.
+        self.model_download_btn = PushButton("Download", self, FIF.DOWNLOAD)
+        self.model_download_btn.clicked.connect(self._start_model_download)
+        stt_grid.addWidget(self.model_download_btn, 0, 2)
+
+        self.model_status = CaptionLabel("")
+        stt_grid.addWidget(self.model_status, 1, 1, 1, 2)
+
+        # Progress bar + percentage/MB caption, hidden until a download runs.
+        self.model_progress = ProgressBar()
+        self.model_progress.setVisible(False)
+        stt_grid.addWidget(self.model_progress, 2, 1, 1, 2)
+        self.model_progress_label = CaptionLabel("")
+        self.model_progress_label.setVisible(False)
+        stt_grid.addWidget(self.model_progress_label, 3, 1, 1, 2)
+
         stt_grid.addWidget(
             CaptionLabel("The large model is far more accurate on clean DVD-rip "
-                         "audio but uses ~1.8 GB. It downloads automatically the "
-                         "first time it is used."), 2, 0)
+                         "audio but uses ~1.8 GB. Choose a size, then click "
+                         "Download. Re-downloading refreshes it to the latest "
+                         "published build."), 4, 0, 1, 3)
         stt_grid.setColumnStretch(1, 1)
         stt_card.addLayout(stt_grid)
         root.addWidget(stt_card)
@@ -875,6 +948,11 @@ class SettingsInterface(QWidget):
         save_row.addWidget(self.save_btn)
         root.addLayout(save_row)
         root.addStretch(1)
+
+        # Track the model size that is actually saved, plus any live download.
+        self._saved_model_size = cur_size
+        self._dl_worker = None
+        self._refresh_model_ui()
 
     def _pick_db(self):
         p, _ = QFileDialog.getOpenFileName(
@@ -893,15 +971,161 @@ class SettingsInterface(QWidget):
     def _change_theme(self, name: str):
         self.win.apply_theme(name)
 
+    # ---- Vosk model management -------------------------------------------
+    def _selected_model_size(self) -> str:
+        return self._model_values[self.model_combo.currentIndex()]
+
+    def _model_present(self, size: str) -> bool:
+        """True if the model for ``size`` is already downloaded on disk."""
+        if stt_utils is None:
+            return False
+        try:
+            return stt_utils.get_model_path(size) is not None
+        except Exception:
+            return False
+
+    def _downloading(self) -> bool:
+        return self._dl_worker is not None and self._dl_worker.isRunning()
+
+    def _refresh_model_ui(self):
+        """Single source of truth for the model card + Save button state.
+
+        Rules:
+          * While a download runs, lock the combo/download button and Save.
+          * If the selected model is not on disk, Save is disabled and a hint
+            tells the user to download it first.
+          * If it is present, Save is enabled and the button offers to
+            re-download / update to the latest build.
+        """
+        if self._downloading():
+            self.model_combo.setEnabled(False)
+            self.model_download_btn.setEnabled(True)  # doubles as Cancel
+            self.model_download_btn.setText("Cancel")
+            self.save_btn.setEnabled(False)
+            self.model_status.setText("Downloading model...")
+            return
+
+        # Not downloading: normal state.
+        self.model_combo.setEnabled(True)
+        self.model_progress.setVisible(False)
+        self.model_progress_label.setVisible(False)
+        size = self._selected_model_size()
+        present = self._model_present(size)
+
+        if stt_utils is None:
+            self.model_download_btn.setEnabled(False)
+            self.model_download_btn.setText("Download")
+            self.model_status.setText(
+                "Speech-to-text module unavailable - cannot manage models.")
+            # Do not block saving other settings in this degraded state.
+            self.save_btn.setEnabled(True)
+            return
+
+        self.model_download_btn.setEnabled(True)
+        if present:
+            self.model_download_btn.setText("Re-download / Update")
+            self.model_status.setText("Installed - ready to use.")
+            self.save_btn.setEnabled(True)
+        else:
+            self.model_download_btn.setText("Download")
+            self.model_status.setText(
+                "Not downloaded. Click Download before saving this model choice.")
+            self.save_btn.setEnabled(False)
+
+    def _on_model_changed(self, _idx: int):
+        # Changing the selector never triggers a download by itself; it just
+        # updates the state (and disables Save if the new choice is missing).
+        self._refresh_model_ui()
+
+    def _start_model_download(self):
+        # The button doubles as a Cancel control while a download is running.
+        if self._downloading():
+            self._dl_worker.cancel()
+            self.model_download_btn.setEnabled(False)
+            self.model_status.setText("Cancelling...")
+            return
+
+        if stt_utils is None:
+            InfoBar.error(
+                "Unavailable",
+                "The speech-to-text module could not be loaded, so models "
+                "cannot be downloaded.",
+                duration=6000, position=InfoBarPosition.TOP, parent=self)
+            return
+
+        size = self._selected_model_size()
+        present = self._model_present(size)
+        # Present -> user asked to update, so force a fresh pull of the latest
+        # published build; missing -> a normal first download.
+        self._dl_worker = ModelDownloadWorker(size, force=present)
+        self._dl_worker.progress.connect(self._on_dl_progress)
+        self._dl_worker.finishedOk.connect(self._on_dl_ok)
+        self._dl_worker.failed.connect(self._on_dl_failed)
+        self._dl_worker.finished.connect(self._on_dl_thread_done)
+
+        self.model_progress.setVisible(True)
+        self.model_progress.setValue(0)
+        self.model_progress_label.setVisible(True)
+        self.model_progress_label.setText("Starting download...")
+        self._refresh_model_ui()
+        self._dl_worker.start()
+
+    def _on_dl_progress(self, done: int, total: int):
+        mb = 1024 * 1024
+        if total > 0:
+            pct = int(done * 100 / total)
+            self.model_progress.setValue(pct)
+            self.model_progress_label.setText(
+                f"{pct}%  ({done / mb:.1f} MB of {total / mb:.1f} MB)")
+        else:
+            # Unknown length: show indeterminate-style text but keep the bar.
+            self.model_progress.setValue(0)
+            self.model_progress_label.setText(f"{done / mb:.1f} MB downloaded...")
+
+    def _on_dl_ok(self, path: str):
+        self.model_progress.setValue(100)
+        InfoBar.success(
+            "Model ready",
+            "The Vosk model was downloaded successfully.",
+            duration=5000, position=InfoBarPosition.TOP, parent=self)
+
+    def _on_dl_failed(self, msg: str):
+        InfoBar.error(
+            "Download failed", msg,
+            duration=8000, position=InfoBarPosition.TOP, parent=self)
+
+    def _on_dl_thread_done(self):
+        # Runs whether the download succeeded, failed, or was cancelled.
+        self._dl_worker = None
+        self._refresh_model_ui()
+
     def _save(self):
+        # Guard: never save a model choice whose files are not on disk, or while
+        # a download is in flight (belt-and-braces - the button is disabled too).
+        size = self._selected_model_size()
+        if self._downloading():
+            InfoBar.warning(
+                "Please wait",
+                "A model download is in progress. Let it finish before saving.",
+                duration=5000, position=InfoBarPosition.TOP, parent=self)
+            return
+        if stt_utils is not None and not self._model_present(size):
+            InfoBar.warning(
+                "Download required",
+                "Download the selected Vosk model before saving this choice.",
+                duration=6000, position=InfoBarPosition.TOP, parent=self)
+            self._refresh_model_ui()
+            return
+
         self.cfg.update(
             db_path=self.db_edit.text().strip(),
             engine_config_path=self.eng_edit.text().strip(),
             theme=self.theme_combo.currentText(),
             max_workers=int(self.workers_spin.value()),
-            vosk_model_size=self._model_values[self.model_combo.currentIndex()],
+            vosk_model_size=size,
         )
         self.cfg.save()
+        self._saved_model_size = size
         InfoBar.success("Saved", "Your settings have been saved.",
                         duration=4000, position=InfoBarPosition.TOP, parent=self)
 
@@ -975,6 +1199,15 @@ class MainWindow(FluentWindow):
                              NavigationItemPosition.BOTTOM)
 
         self.navigationInterface.setExpandWidth(220)
+
+    def closeEvent(self, event):
+        # If a model download is still running, cancel it and let the thread
+        # unwind cleanly so we never tear down a live QThread on exit.
+        worker = getattr(self.settings_interface, "_dl_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            worker.wait(5000)
+        super().closeEvent(event)
 
     # ----- helpers used by pages -----
     def current_db_path(self) -> str:
