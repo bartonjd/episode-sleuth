@@ -1,0 +1,16 @@
+# PEP 517/518 build configuration.
+#
+# Project metadata (dependencies, entry points, version) is defined in
+# setup.py so that requirements.txt stays the single source of truth for the
+# dependency list. This file just declares the build backend and the pytest
+# configuration.
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

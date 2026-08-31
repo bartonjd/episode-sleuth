@@ -87,6 +87,59 @@ alongside the shingle hashes - no extra step is required.
 | `gui_config.py` | GUI settings store - persists the fingerprint DB path and options to `gui_config.json`. |
 | `fluent_launcher.bat` | Double-click launcher for the GUI on Windows (uses `pythonw`, no console window). |
 
+## Development setup
+
+The project is pip-installable. Installing in **editable** mode adds the
+project directory to your environment so you can run the tools from anywhere
+and hack on the source with changes taking effect immediately.
+
+```bash
+# from the project root, ideally in a virtual environment
+pip install -e .
+
+# include the dev tools (pytest) as well:
+pip install -e ".[dev]"
+```
+
+Installing this way keeps the existing flat layout untouched - the scripts and
+the Windows launchers (`fluent_launcher.bat`, `python dvd_identifier_fluent.py`)
+keep working exactly as before.
+
+### Console entry points
+
+After `pip install -e .` three commands are available on your PATH:
+
+| Command | Runs | Equivalent to |
+|---------|------|---------------|
+| `dvd-gui` | Fluent desktop GUI | `python dvd_identifier_fluent.py` |
+| `dvd-identify` | Batch DVD identifier CLI | `python identify_dvd_episodes.py` |
+| `dvd-fingerprint` | Build reference DB from subtitles | `python create_fingerprint.py` |
+
+For example:
+
+```bash
+dvd-fingerprint --dir ./subtitles --show-title "Matlock"
+dvd-identify --dir ./dvd_rips --db fingerprints.db
+dvd-gui
+```
+
+### Running the tests
+
+Tests live in `tests/` and run with `pytest`:
+
+```bash
+pip install -e ".[dev]"    # installs pytest
+pytest                     # runs the suite
+
+# or, without installing the extras:
+pip install pytest
+python -m pytest -q
+```
+
+The included tests are lightweight smoke tests (packaging metadata + core
+imports) that run without a Vosk model, ffmpeg, or a populated database. Put
+larger test fixtures (sample subtitles, short clips) under `tests/fixtures/`.
+
 ## Desktop GUI (Windows)
 
 Prefer not to use the command line? Run the point-and-click app:
