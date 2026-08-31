@@ -48,3 +48,4 @@ gui_config.json
 !tests/fixtures/
 !tests/fixtures/*.db
 !tests/fixtures/*.wav
+.coverage
