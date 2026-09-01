@@ -1,15 +1,17 @@
-# Building standalone EpisodeSleuth executables
+# Building standalone EpisodeSleuth binaries
 
 EpisodeSleuth can be packaged into a **self-contained executable** that runs the
-Fluent desktop GUI **without Python installed** on the target machine. This uses
-[PyInstaller](https://pyinstaller.org/) and a single cross-platform build spec,
-`episodesleuth.spec`, driven by a small wrapper script per OS.
+Fluent desktop GUI **without Python installed** on the target machine. On
+Windows this produces an `.exe`; on Linux/macOS it produces a native binary
+(no file extension). It uses [PyInstaller](https://pyinstaller.org/) and a
+single cross-platform build spec, `episodesleuth.spec`, driven by a small
+wrapper script per OS.
 
 There are three ways to ship the app, from simplest to most polished:
 
 | Method | Best for | Script |
 |--------|----------|--------|
-| **Standalone executable** (this doc) | Handing someone a runnable app to double-click; Linux distribution | `build_exe.ps1` / `build_exe.sh` |
+| **Standalone binary** (this doc) | Handing someone a runnable app to double-click; Linux/macOS distribution | `build_binary.ps1` (Windows) / `build_binary.sh` (Linux/macOS) |
 | **MSIX installer** | Windows Store / signed enterprise deployment | `build_msix.ps1` |
 | **Source install** | Developers, or users who already have Python | `install.ps1` / `pip install -e .` |
 
@@ -20,7 +22,7 @@ There are three ways to ship the app, from simplest to most polished:
 ### Windows
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+powershell -ExecutionPolicy Bypass -File .\build_binary.ps1
 ```
 
 Output: `dist\EpisodeSleuth\EpisodeSleuth.exe`. Zip the whole
@@ -30,11 +32,11 @@ double-clicks `EpisodeSleuth.exe`, no Python required.
 ### Linux / macOS
 
 ```bash
-./build_exe.sh
+./build_binary.sh
 ```
 
-Output: `dist/EpisodeSleuth/EpisodeSleuth`. Distribute the whole
-`dist/EpisodeSleuth` folder.
+Output: `dist/EpisodeSleuth/EpisodeSleuth` (a native executable binary, no
+`.exe` extension). Distribute the whole `dist/EpisodeSleuth` folder.
 
 Both scripts build inside a throwaway `.buildvenv` so your system Python stays
 clean, then run PyInstaller against `episodesleuth.spec`.
@@ -48,13 +50,13 @@ variables on Linux/macOS):
 
 | Option | Windows | Linux/macOS | Effect |
 |--------|---------|-------------|--------|
-| Bundle the Vosk model | `-BundleModel` | `BUNDLE_MODEL=1 ./build_exe.sh` | Packs `models\` into the bundle for a fully offline app (much larger). Off by default - the model is downloaded on first run / by `install.ps1`. |
-| Single-file exe | `-OneFile` | `ONEFILE=1 ./build_exe.sh` | Produces one `EpisodeSleuth[.exe]` file instead of a one-folder bundle. Simpler to share but slower to start (it unpacks to a temp dir each launch). |
+| Bundle the Vosk model | `-BundleModel` | `BUNDLE_MODEL=1 ./build_binary.sh` | Packs `models\` into the bundle for a fully offline app (much larger). Off by default - the model is downloaded on first run / by `install.ps1`. |
+| Single-file build | `-OneFile` | `ONEFILE=1 ./build_binary.sh` | Produces one executable file (`EpisodeSleuth.exe` on Windows, `EpisodeSleuth` on Linux/macOS) instead of a one-folder bundle. Simpler to share but slower to start (it unpacks to a temp dir each launch). |
 
 Example - fully offline single-file Windows build:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build_exe.ps1 -BundleModel -OneFile
+powershell -ExecutionPolicy Bypass -File .\build_binary.ps1 -BundleModel -OneFile
 ```
 
 ---
@@ -83,7 +85,7 @@ package-qualified imports (`audio_fingerprint.gui.*`) all resolve.
 ## Prerequisites
 
 - **Python 3.9+** on `PATH` (only on the *build* machine - not on the machines
-  that run the finished executable).
+  that run the finished binary).
 - **FFmpeg** is still required at **run time** for decoding audio. It is an
   external tool and is intentionally *not* bundled; install it with
   `winget install Gyan.FFmpeg` (Windows) or your package manager (Linux/macOS),
@@ -99,7 +101,8 @@ into `.buildvenv` automatically.
 - **One-folder build (default):** distribute the entire `dist/EpisodeSleuth`
   folder (zip it). The executable and its `_internal` support files must stay
   together.
-- **One-file build (`-OneFile`):** distribute the single `EpisodeSleuth[.exe]`.
+- **One-file build (`-OneFile`):** distribute the single executable file
+  (`EpisodeSleuth.exe` on Windows, `EpisodeSleuth` on Linux/macOS).
 
 On first run, if the Vosk speech model was not bundled, use the app's
 **Settings** page to download it (or run `install.ps1`).
@@ -109,7 +112,7 @@ On first run, if the Vosk speech model was not bundled, use the app's
 ## Relationship to the MSIX build
 
 `build_msix.ps1` performs the same PyInstaller step and then wraps the result in
-a signed `.msix` using `packaging\AppxManifest.xml`. Use `build_exe.ps1` when
-you just want a runnable folder/exe, and `build_msix.ps1` when you need a proper
-Windows installer / Store package. Both share `episodesleuth.spec` conceptually,
-so the runtime behavior is identical.
+a signed `.msix` using `packaging\AppxManifest.xml`. Use `build_binary.ps1` when
+you just want a runnable folder/executable, and `build_msix.ps1` when you need a
+proper Windows installer / Store package. Both share `episodesleuth.spec`
+conceptually, so the runtime behavior is identical.

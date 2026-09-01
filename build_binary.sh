@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  build_exe.sh - build a standalone EpisodeSleuth executable on Linux/macOS
+#  build_binary.sh - build a standalone EpisodeSleuth binary on Linux/macOS
 #
 #  Produces a self-contained one-folder bundle that runs the Fluent GUI without
 #  requiring Python on the target machine:
@@ -8,9 +8,9 @@
 #      dist/EpisodeSleuth/EpisodeSleuth
 #
 #  Usage:
-#      ./build_exe.sh                 # normal one-folder build
-#      BUNDLE_MODEL=1 ./build_exe.sh  # also pack the Vosk model (fully offline)
-#      ONEFILE=1 ./build_exe.sh       # single-file executable (slower to start)
+#      ./build_binary.sh                 # normal one-folder build
+#      BUNDLE_MODEL=1 ./build_binary.sh  # also pack the Vosk model (fully offline)
+#      ONEFILE=1 ./build_binary.sh       # single-file binary (slower to start)
 #
 #  It builds inside a throwaway .buildvenv so your system Python stays clean.
 # =============================================================================

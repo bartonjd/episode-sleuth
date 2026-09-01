@@ -9,8 +9,8 @@ GUI without requiring Python to be installed on the target machine:
 
 Build it with either of the wrapper scripts (recommended):
 
-    Windows : powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
-    Linux   : ./build_exe.sh
+    Windows : powershell -ExecutionPolicy Bypass -File .\build_binary.ps1
+    Linux   : ./build_binary.sh
 
 or directly:
 

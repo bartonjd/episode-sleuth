@@ -387,12 +387,12 @@ self-contained executable with PyInstaller - the cleanest launch method (no
 
 ```powershell
 # Windows -> dist\EpisodeSleuth\EpisodeSleuth.exe
-powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+powershell -ExecutionPolicy Bypass -File .\build_binary.ps1
 ```
 
 ```bash
 # Linux / macOS -> dist/EpisodeSleuth/EpisodeSleuth
-./build_exe.sh
+./build_binary.sh
 ```
 
 Both wrappers build inside a throwaway `.buildvenv` and drive one shared,

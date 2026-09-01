@@ -27,10 +27,10 @@
     start, but a single file to share).
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+    powershell -ExecutionPolicy Bypass -File .\build_binary.ps1
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\build_exe.ps1 -BundleModel
+    powershell -ExecutionPolicy Bypass -File .\build_binary.ps1 -BundleModel
 #>
 [CmdletBinding()]
 param(
