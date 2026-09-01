@@ -1,0 +1,17 @@
+EpisodeSleuth
+Copyright 2026 bartonjd (EpisodeSleuth contributors)
+
+This product includes software developed as part of the EpisodeSleuth project.
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file for the
+full license text.
+
+EpisodeSleuth relies on third-party components that are distributed under their
+own licenses, including (but not limited to):
+  - Vosk offline speech-recognition models and toolkit (Apache-2.0)
+  - PySide6 / Qt for Python (LGPLv3)
+  - PySide6-Fluent-Widgets (GPLv3 / commercial)
+  - FFmpeg (LGPL/GPL, invoked as an external tool)
+
+These components remain the property of their respective owners and are governed
+by their own license terms.

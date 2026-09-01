@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main application window and entry point for the DVD Episode Identifier GUI.
+"""Main application window and entry point for the EpisodeSleuth GUI.
 
 It wires together the Identify / Build library / Settings / Log pages inside a
 dark, acrylic FluentWindow with an icon sidebar.
@@ -87,6 +87,35 @@ class MainWindow(FluentWindow):
                              NavigationItemPosition.BOTTOM)
 
         self.navigationInterface.setExpandWidth(220)
+
+        # Guard against leaving the Settings tab with unsaved changes (or a live
+        # model download). We track the current interface ourselves because the
+        # stacked widget's currentChanged fires *after* the switch, so if the
+        # user cancels we switch straight back to Settings.
+        self._current_iface = self.stackedWidget.currentWidget()
+        self._nav_guard_active = False
+        self.stackedWidget.currentChanged.connect(self._on_interface_changed)
+
+    def _on_interface_changed(self, index: int):
+        """Intercept tab switches to protect unsaved Settings changes."""
+        if self._nav_guard_active:
+            return
+        new_widget = self.stackedWidget.widget(index)
+        prev = self._current_iface
+        # Only guard when leaving the Settings tab for a different tab.
+        if (prev is self.settings_interface
+                and new_widget is not self.settings_interface):
+            if not self.settings_interface.confirm_leave():
+                # User chose to stay - switch straight back to Settings.
+                self._nav_guard_active = True
+                try:
+                    self.switchTo(self.settings_interface)
+                    self.navigationInterface.setCurrentItem(
+                        self.settings_interface.objectName())
+                finally:
+                    self._nav_guard_active = False
+                return
+        self._current_iface = new_widget
 
     def closeEvent(self, event):
         # If a model download is still running, cancel it and let the thread

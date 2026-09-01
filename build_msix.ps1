@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build a signed .msix installer for the DVD Episode Identifier (Windows x64).
+    Build a signed .msix installer for EpisodeSleuth (Windows x64).
 
 .DESCRIPTION
     Two stages:
@@ -19,13 +19,13 @@
     Package version, must be 4 parts (e.g. 1.0.0.0). Default 1.0.0.0.
 
 .PARAMETER CertPassword
-    Password for the generated signing certificate .pfx. Default "dvdid".
+    Password for the generated signing certificate .pfx. Default "episodesleuth".
 
 .PARAMETER SkipBundleTools
     Do not try to copy ffmpeg.exe into the package.
 
 .PARAMETER Publisher
-    Certificate subject / manifest Publisher. Default "CN=DVDIdentifier".
+    Certificate subject / manifest Publisher. Default "CN=EpisodeSleuth".
     If you change this, it is written into the manifest automatically.
 
 .EXAMPLE
@@ -41,9 +41,9 @@
 [CmdletBinding()]
 param(
     [string]$Version = "1.0.0.0",
-    [string]$CertPassword = "dvdid",
+    [string]$CertPassword = "episodesleuth",
     [switch]$SkipBundleTools,
-    [string]$Publisher = "CN=DVDIdentifier"
+    [string]$Publisher = "CN=EpisodeSleuth"
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,13 +59,13 @@ if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
     throw "Version must have 4 numeric parts, e.g. 1.0.0.0 (got '$Version')."
 }
 
-$AppName   = "dvd_identifier_fluent"
+$AppName   = "EpisodeSleuth"
 $DistApp   = Join-Path $ProjectDir "dist\$AppName"
 $Assets    = Join-Path $ProjectDir "packaging\assets"
 $Manifest  = Join-Path $ProjectDir "packaging\AppxManifest.xml"
 $Icon      = Join-Path $ProjectDir "packaging\app.ico"
-$OutMsix   = Join-Path $ProjectDir "DVDEpisodeIdentifier_$Version.msix"
-$Pfx       = Join-Path $ProjectDir "packaging\dvdid_selfsign.pfx"
+$OutMsix   = Join-Path $ProjectDir "EpisodeSleuth_$Version.msix"
+$Pfx       = Join-Path $ProjectDir "packaging\episodesleuth_selfsign.pfx"
 
 foreach ($p in @($Manifest, $Assets)) {
     if (-not (Test-Path $p)) {
@@ -162,7 +162,7 @@ Copy-Item -Recurse -Force $Assets (Join-Path $DistApp "assets")
 # Write the manifest with the version + publisher substituted in.
 $mx = Get-Content $Manifest -Raw
 $mx = $mx.Replace("{VERSION}", $Version)
-$mx = $mx -replace 'Publisher="CN=DVDIdentifier"', ('Publisher="' + $Publisher + '"')
+$mx = $mx -replace 'Publisher="CN=EpisodeSleuth"', ('Publisher="' + $Publisher + '"')
 Set-Content -Path (Join-Path $DistApp "AppxManifest.xml") -Value $mx -Encoding UTF8
 Ok "Manifest staged (Version=$Version, Publisher=$Publisher)."
 
@@ -197,7 +197,7 @@ $cert = Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
 if (-not $cert) {
     Info "Creating self-signed cert $Publisher ..."
     $cert = New-SelfSignedCertificate -Type Custom -Subject $Publisher `
-        -KeyUsage DigitalSignature -FriendlyName "DVD Identifier self-sign" `
+        -KeyUsage DigitalSignature -FriendlyName "EpisodeSleuth self-sign" `
         -CertStoreLocation "Cert:\CurrentUser\My" `
         -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3",
                          "2.5.29.19={text}")
@@ -205,7 +205,7 @@ if (-not $cert) {
 $secPw = ConvertTo-SecureString -String $CertPassword -Force -AsPlainText
 Export-PfxCertificate -Cert $cert -FilePath $Pfx -Password $secPw | Out-Null
 # Also export the public .cer so users can trust it before installing.
-$cer = Join-Path $ProjectDir "packaging\dvdid_selfsign.cer"
+$cer = Join-Path $ProjectDir "packaging\episodesleuth_selfsign.cer"
 Export-Certificate -Cert $cert -FilePath $cer | Out-Null
 Ok "Certificate ready (.pfx + .cer in packaging\)."
 

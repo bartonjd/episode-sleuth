@@ -1,8 +1,8 @@
-# Installing the DVD Episode Identifier on Windows
+# Installing EpisodeSleuth on Windows
 
-This guide walks you through setting up everything the phonetic dialogue
-fingerprinting system needs on a Windows machine. No programming experience
-required.
+This guide walks you through setting up everything **EpisodeSleuth** (the
+phonetic dialogue fingerprinting system) needs on a Windows machine. No
+programming experience required.
 
 > **In a hurry?** Just double-click `install.bat` - it runs the automated
 > setup script which handles everything below. The manual steps are here in
@@ -27,7 +27,7 @@ required.
 2. **Double-click `install.bat`.**
 3. Follow any prompts (it may ask to install Python or FFmpeg via `winget`).
 4. When it says "Setup complete", you are done. A Desktop shortcut
-   ("DVD Episode Identifier") will have been created.
+   ("EpisodeSleuth") will have been created.
 
 From PowerShell you can also run:
 
@@ -110,9 +110,9 @@ the small English model:
 
 ## Running the app
 
-- **GUI:** double-click `fluent_launcher.bat`, or run
-  `python -m audio_fingerprint.gui`
-- **CLI:** `python identify_dvd_episodes.py --dir "C:\path\to\dvd_rips"`
+- **GUI:** double-click the **EpisodeSleuth** shortcut (or `fluent_launcher.bat`),
+  or run `python -m audio_fingerprint.gui`
+- **CLI:** `python -m audio_fingerprint.cli.identify --dir "C:\path\to\dvd_rips"`
 
 See [README.md](README.md) and [USAGE_DVD.md](USAGE_DVD.md) for full usage.
 

@@ -1,13 +1,15 @@
-# Identifying DVD-ripped episodes for Plex
+# Identifying DVD-ripped episodes for Plex with EpisodeSleuth
 
-This guide covers the **focused workflow** for the real problem: *"I have a folder
+This guide covers **EpisodeSleuth's** core workflow for the real problem: *"I have a folder
 of episode files ripped from DVDs - they're out of order, some are extended cuts,
 and the on-screen video never shows the episode title. Which file is which
 episode, so I can name them for Plex?"*
 
-It uses one small script - **`identify_dvd_episodes.py`** - and a reference
-database built from the show's subtitles. You do **not** need a microphone, and
-you do **not** transcribe the whole video.
+It uses the EpisodeSleuth identifier - runnable as
+`python -m audio_fingerprint.cli.identify` (the older `identify_dvd_episodes.py`
+script still works as a compatibility shim) - together with a reference database
+built from the show's subtitles. You do **not** need a microphone, and you do
+**not** transcribe the whole video.
 
 ---
 

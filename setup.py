@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Setup script for the audio-fingerprint (phonetic DVD identifier) project.
+"""Setup script for EpisodeSleuth (phonetic DVD episode identifier).
 
 This keeps the current flat layout (all modules live in the project root) so
 that the existing scripts and Windows launchers keep working exactly as before,
@@ -70,15 +70,15 @@ SUB_PACKAGES = [
 ]
 
 setup(
-    name="audio-fingerprint",
+    name="episode-sleuth",
     version="1.0.0",
-    description="Phonetic 'Shazam for dialogue' - identify TV/movie episodes "
-                "from DVD-rip audio by matching transcribed speech against a "
-                "subtitle-built reference database.",
+    description="EpisodeSleuth - phonetic 'Shazam for dialogue' that identifies "
+                "TV/movie episodes from DVD-rip audio by matching transcribed "
+                "speech against a subtitle-built reference database.",
     long_description=LONG_DESCRIPTION,
     long_description_content_type="text/markdown",
-    author="audio-fingerprint contributors",
-    license="MIT",
+    author="EpisodeSleuth contributors",
+    license="Apache-2.0",
     python_requires=">=3.9",
     py_modules=PY_MODULES,
     packages=SUB_PACKAGES,
@@ -90,6 +90,11 @@ setup(
     },
     entry_points={
         "console_scripts": [
+            # EpisodeSleuth entry points
+            "episodesleuth = audio_fingerprint.gui:main",
+            "episodesleuth-identify = audio_fingerprint.cli.identify:main",
+            "episodesleuth-fingerprint = audio_fingerprint.cli.build_fingerprints:main",
+            # Backwards-compatible aliases (kept so existing docs/scripts work)
             "dvd-gui = audio_fingerprint.gui:main",
             "dvd-identify = audio_fingerprint.cli.identify:main",
             "dvd-fingerprint = audio_fingerprint.cli.build_fingerprints:main",
@@ -97,7 +102,7 @@ setup(
     },
     classifiers=[
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",
         "Topic :: Multimedia :: Sound/Audio :: Analysis",
         "Intended Audience :: End Users/Desktop",

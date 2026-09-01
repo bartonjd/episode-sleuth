@@ -1,6 +1,6 @@
 @echo off
 REM =====================================================================
-REM  DVD Episode Identifier - one-click Windows setup
+REM  EpisodeSleuth - one-click Windows setup
 REM  Double-click this file. It just runs install.ps1 with the right
 REM  execution policy so you do not have to type any PowerShell flags.
 REM =====================================================================

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog,
 )
@@ -34,6 +35,16 @@ try:
 except Exception:  # pragma: no cover - only if deps are absent
     FingerprintDB = None
     validate_db_path = None
+
+# Vosk model specs (used to show the exact model directory name in the download
+# progress text, e.g. "Downloading vosk-model-small-en-us-0.15... 45%").
+try:
+    from constants import VOSK_MODELS
+except Exception:  # pragma: no cover - only if constants is unavailable
+    VOSK_MODELS = {
+        "small": {"dir": "vosk-model-small-en-us-0.15"},
+        "large": {"dir": "vosk-model-en-us-0.22"},
+    }
 
 
 class SettingsInterface(QWidget):
@@ -122,32 +133,38 @@ class SettingsInterface(QWidget):
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         stt_grid.addWidget(self.model_combo, 0, 1)
 
-        # Download / update button + live status live to the right of the combo.
+        # Download / update button + a dedicated Cancel Download button that is
+        # only shown while a download is running.
         self.model_download_btn = PushButton("Download", self, FIF.DOWNLOAD)
         self.model_download_btn.clicked.connect(self._start_model_download)
         stt_grid.addWidget(self.model_download_btn, 0, 2)
 
-        self.model_status = CaptionLabel("")
-        stt_grid.addWidget(self.model_status, 1, 1, 1, 2)
+        self.model_cancel_btn = PushButton("Cancel Download", self, FIF.CANCEL)
+        self.model_cancel_btn.clicked.connect(self._cancel_model_download)
+        self.model_cancel_btn.setVisible(False)
+        stt_grid.addWidget(self.model_cancel_btn, 0, 3)
 
-        # Progress bar + percentage caption, hidden until a download runs.
-        # Spans the full width of the card and is made taller so a running
-        # download is clearly visible next to the Download button.
+        self.model_status = CaptionLabel("")
+        stt_grid.addWidget(self.model_status, 1, 1, 1, 3)
+
+        # Persistent progress bar + percentage caption, styled to match the
+        # Identify tab's progress bar (thin, 6 px). Hidden until a download runs
+        # and kept visible for the whole download - no disappearing InfoBar.
         self.model_progress = ProgressBar()
-        self.model_progress.setFixedHeight(10)
+        self.model_progress.setFixedHeight(6)
         self.model_progress.setVisible(False)
-        stt_grid.addWidget(self.model_progress, 2, 0, 1, 3)
-        # A large, prominent percentage / MB readout (StrongBodyLabel is bolder
-        # and bigger than the CaptionLabel used elsewhere).
+        stt_grid.addWidget(self.model_progress, 2, 0, 1, 4)
+        # A prominent status readout, e.g.
+        # "Downloading vosk-model-small-en-us-0.15... 45%".
         self.model_progress_label = StrongBodyLabel("")
         self.model_progress_label.setVisible(False)
-        stt_grid.addWidget(self.model_progress_label, 3, 0, 1, 3)
+        stt_grid.addWidget(self.model_progress_label, 3, 0, 1, 4)
 
         stt_grid.addWidget(
             CaptionLabel("The large model is far more accurate on clean DVD-rip "
                          "audio but uses ~1.8 GB. Choose a size, then click "
                          "Download. Re-downloading refreshes it to the latest "
-                         "published build."), 4, 0, 1, 3)
+                         "published build."), 4, 0, 1, 4)
         stt_grid.setColumnStretch(1, 1)
         stt_card.addLayout(stt_grid)
         root.addWidget(stt_card)
@@ -163,6 +180,123 @@ class SettingsInterface(QWidget):
         # Track the model size that is actually saved, plus any live download.
         self._saved_model_size = cur_size
         self._dl_worker = None
+        self._refresh_model_ui()
+
+        # --- unsaved-changes tracking ------------------------------------------
+        # Snapshot the values as they were loaded; anything that differs from
+        # this snapshot counts as an unsaved change and triggers the Save /
+        # Discard / Cancel prompt when the user leaves the Settings tab.
+        self._original = self._snapshot()
+        # React to edits so we could surface dirty state if needed later.
+        self.db_edit.textChanged.connect(self._on_field_changed)
+        self.eng_edit.textChanged.connect(self._on_field_changed)
+        self.theme_combo.currentTextChanged.connect(self._on_field_changed)
+        self.workers_spin.valueChanged.connect(self._on_field_changed)
+        self.model_combo.currentIndexChanged.connect(self._on_field_changed)
+
+    # ---- unsaved-changes helpers -----------------------------------------
+    def _snapshot(self) -> dict:
+        """Capture the current values of every persisted setting."""
+        return {
+            "db_path": self.db_edit.text().strip(),
+            "engine_config_path": self.eng_edit.text().strip(),
+            "theme": self.theme_combo.currentText(),
+            "max_workers": int(self.workers_spin.value()),
+            "vosk_model_size": self._selected_model_size(),
+        }
+
+    def _on_field_changed(self, *args):
+        # Hook kept intentionally light; dirty state is computed on demand in
+        # has_unsaved_changes() so it always reflects the live widgets.
+        pass
+
+    def has_unsaved_changes(self) -> bool:
+        return self._snapshot() != getattr(self, "_original", None)
+
+    def confirm_leave(self) -> bool:
+        """Decide whether the user may leave the Settings tab.
+
+        Returns True to allow leaving, False to stay. Handles two cases:
+          * A model download in progress -> offer to cancel it and leave.
+          * Unsaved changes -> Save / Discard / Cancel prompt.
+        """
+        # 1. A live download blocks a clean leave. Offer to cancel it.
+        if self._downloading():
+            box = MessageBox(
+                "Download in progress",
+                "A Vosk model download is still running. Leaving this tab will "
+                "cancel it. Cancel the download and leave?",
+                self.win)
+            box.yesButton.setText("Cancel download and leave")
+            box.cancelButton.setText("Stay")
+            if not box.exec():
+                return False
+            # Cancel the download and wait briefly for the thread to unwind so
+            # we never leave a live QThread running behind the scenes.
+            if self._dl_worker is not None:
+                self._dl_worker.cancel()
+                self._dl_worker.wait(5000)
+            # Fall through to the unsaved-changes check below.
+
+        # 2. Unsaved changes -> Save / Discard / Cancel (three real buttons).
+        if not self.has_unsaved_changes():
+            return True
+
+        choice = self._prompt_unsaved()
+        if choice == "save":
+            # Save. If the save is blocked (e.g. model not downloaded), stay.
+            return self._save(from_leave=True)
+        if choice == "discard":
+            self._revert()
+            return True
+        # "cancel" -> stay on the Settings tab.
+        return False
+
+    def _prompt_unsaved(self) -> str:
+        """Show a Save / Discard / Cancel dialog. Returns the chosen action.
+
+        qfluentwidgets' MessageBox ships with two buttons (yes/cancel); a third
+        real button is inserted into its button layout so the user gets the
+        conventional three-way choice in a single, consistent Fluent dialog.
+        """
+        box = MessageBox(
+            "Unsaved changes",
+            "You have unsaved changes. Do you want to save them?",
+            self.win)
+        box.yesButton.setText("Save")
+        box.cancelButton.setText("Cancel")
+
+        # Insert a dedicated "Discard" button between Save and Cancel.
+        discard_btn = PushButton("Discard", box.buttonGroup)
+        box.buttonLayout.insertWidget(1, discard_btn, 1, Qt.AlignVCenter)
+
+        self._unsaved_choice = "cancel"
+
+        def _choose_discard():
+            self._unsaved_choice = "discard"
+            box.reject()
+
+        discard_btn.clicked.connect(_choose_discard)
+
+        # yesButton -> save (box returns True); cancelButton -> cancel/stay.
+        if box.exec():
+            return "save"
+        return self._unsaved_choice
+
+    def _revert(self):
+        """Restore every widget to the last-loaded (original) values."""
+        orig = getattr(self, "_original", None)
+        if not orig:
+            return
+        self.db_edit.setText(orig.get("db_path", ""))
+        self.eng_edit.setText(orig.get("engine_config_path", ""))
+        self.theme_combo.setCurrentText(orig.get("theme", "Dark"))
+        self.workers_spin.setValue(int(orig.get("max_workers", 4)))
+        size = orig.get("vosk_model_size", "small")
+        if size in self._model_values:
+            self.model_combo.setCurrentIndex(self._model_values.index(size))
+        # Re-apply the theme in case the live preview changed it.
+        self.win.apply_theme(orig.get("theme", "Dark"))
         self._refresh_model_ui()
 
     def _pick_db(self):
@@ -292,11 +426,17 @@ class SettingsInterface(QWidget):
     def _downloading(self) -> bool:
         return self._dl_worker is not None and self._dl_worker.isRunning()
 
+    def _model_dirname(self, size: str) -> str:
+        """The on-disk directory name for a model size (used in status text)."""
+        spec = VOSK_MODELS.get(size) or VOSK_MODELS.get("small", {})
+        return spec.get("dir", f"vosk-model-{size}")
+
     def _refresh_model_ui(self):
         """Single source of truth for the model card + Save button state.
 
         Rules:
-          * While a download runs, lock the combo/download button and Save.
+          * While a download runs, lock the combo + Download button, show the
+            dedicated Cancel Download button, and disable Save.
           * If the selected model is not on disk, Save is disabled and a hint
             tells the user to download it first.
           * If it is present, Save is enabled and the button offers to
@@ -304,14 +444,16 @@ class SettingsInterface(QWidget):
         """
         if self._downloading():
             self.model_combo.setEnabled(False)
-            self.model_download_btn.setEnabled(True)  # doubles as Cancel
-            self.model_download_btn.setText("Cancel")
+            self.model_download_btn.setEnabled(False)
+            self.model_cancel_btn.setVisible(True)
+            self.model_cancel_btn.setEnabled(True)
             self.save_btn.setEnabled(False)
             self.model_status.setText("Downloading model...")
             return
 
         # Not downloading: normal state.
         self.model_combo.setEnabled(True)
+        self.model_cancel_btn.setVisible(False)
         self.model_progress.setVisible(False)
         self.model_progress_label.setVisible(False)
         size = self._selected_model_size()
@@ -342,12 +484,19 @@ class SettingsInterface(QWidget):
         # updates the state (and disables Save if the new choice is missing).
         self._refresh_model_ui()
 
+    def _cancel_model_download(self):
+        """Cancel an in-flight model download (dedicated Cancel Download button)."""
+        if not self._downloading():
+            return
+        self._dl_worker.cancel()
+        self.model_cancel_btn.setEnabled(False)
+        self.model_status.setText("Cancelling...")
+        self.model_progress_label.setText("Cancelling download...")
+
     def _start_model_download(self):
-        # The button doubles as a Cancel control while a download is running.
+        # Guard against a double-start; the dedicated Cancel button handles
+        # cancellation, so the Download button never doubles as one.
         if self._downloading():
-            self._dl_worker.cancel()
-            self.model_download_btn.setEnabled(False)
-            self.model_status.setText("Cancelling...")
             return
 
         if stt_utils is None:
@@ -368,56 +517,64 @@ class SettingsInterface(QWidget):
         self._dl_worker.failed.connect(self._on_dl_failed)
         self._dl_worker.finished.connect(self._on_dl_thread_done)
 
+        # Remember the model being fetched so progress text can name it, e.g.
+        # "Downloading vosk-model-small-en-us-0.15... 45%".
+        self._dl_model_name = self._model_dirname(size)
+
         self.model_progress.setVisible(True)
+        self.model_progress.setRange(0, 100)
         self.model_progress.setValue(0)
         self.model_progress_label.setVisible(True)
-        self.model_progress_label.setText("Starting download...")
+        self.model_progress_label.setText(
+            f"Downloading {self._dl_model_name}... 0%")
 
-        # Let the user know the download is running and set expectations for the
-        # large model, which can take several minutes.
-        if size == "large":
-            msg = ("Downloading the large Vosk model (~1.8 GB). This may take "
-                   "several minutes - progress is shown below the button.")
-        else:
-            msg = ("Downloading the small Vosk model (~39 MB). Progress is "
-                   "shown below the button.")
-        InfoBar.info(
-            "Downloading Vosk model", msg,
-            duration=6000, position=InfoBarPosition.TOP, parent=self)
-
+        # No disappearing InfoBar - the persistent progress bar + label below the
+        # controls is the single, always-visible source of download status.
         self._refresh_model_ui()
         self._dl_worker.start()
 
     def _on_dl_progress(self, done: int, total: int):
         mb = 1024 * 1024
+        name = getattr(self, "_dl_model_name", "Vosk model")
         if total > 0:
             pct = int(done * 100 / total)
             self.model_progress.setValue(pct)
             self.model_progress_label.setText(
-                f"{pct}%  ({done / mb:.1f} MB of {total / mb:.1f} MB)")
+                f"Downloading {name}... {pct}%  "
+                f"({done / mb:.1f} MB of {total / mb:.1f} MB)")
         else:
-            # Unknown length: show indeterminate-style text but keep the bar.
+            # Unknown length: show downloaded MB but keep the bar visible.
             self.model_progress.setValue(0)
-            self.model_progress_label.setText(f"{done / mb:.1f} MB downloaded...")
+            self.model_progress_label.setText(
+                f"Downloading {name}... {done / mb:.1f} MB")
 
     def _on_dl_ok(self, path: str):
+        name = getattr(self, "_dl_model_name", "Vosk model")
         self.model_progress.setValue(100)
-        InfoBar.success(
-            "Model ready",
-            "The Vosk model was downloaded successfully.",
-            duration=5000, position=InfoBarPosition.TOP, parent=self)
+        # Persistent success message in the status label (no InfoBar).
+        self.model_status.setText(f"{name} installed - ready to use.")
 
     def _on_dl_failed(self, msg: str):
-        InfoBar.error(
-            "Download failed", msg,
-            duration=8000, position=InfoBarPosition.TOP, parent=self)
+        # Show the failure persistently in the label instead of a fading InfoBar.
+        self.model_progress_label.setText(f"Download failed: {msg}")
 
     def _on_dl_thread_done(self):
         # Runs whether the download succeeded, failed, or was cancelled.
+        cancelled = self._dl_worker is not None and getattr(
+            self._dl_worker, "_cancel", False)
         self._dl_worker = None
         self._refresh_model_ui()
+        if cancelled:
+            self.model_progress_label.setVisible(True)
+            self.model_progress_label.setText("Download cancelled.")
 
-    def _save(self):
+    def _save(self, from_leave: bool = False) -> bool:
+        """Persist settings. Returns True on success, False if blocked.
+
+        ``from_leave`` is True when called from the unsaved-changes prompt while
+        the user is leaving the tab; on a blocked save we then keep them on the
+        Settings tab (return False) so nothing is silently lost.
+        """
         # Guard: never save a model choice whose files are not on disk, or while
         # a download is in flight (belt-and-braces - the button is disabled too).
         size = self._selected_model_size()
@@ -426,14 +583,14 @@ class SettingsInterface(QWidget):
                 "Please wait",
                 "A model download is in progress. Let it finish before saving.",
                 duration=5000, position=InfoBarPosition.TOP, parent=self)
-            return
+            return False
         if stt_utils is not None and not self._model_present(size):
             InfoBar.warning(
                 "Download required",
                 "Download the selected Vosk model before saving this choice.",
                 duration=6000, position=InfoBarPosition.TOP, parent=self)
             self._refresh_model_ui()
-            return
+            return False
 
         # If a database path is set but the file does not exist yet, offer to
         # create it now so Build Library / Identify do not fail later.
@@ -450,5 +607,8 @@ class SettingsInterface(QWidget):
         )
         self.cfg.save()
         self._saved_model_size = size
+        # The saved state becomes the new baseline for unsaved-change detection.
+        self._original = self._snapshot()
         InfoBar.success("Saved", "Your settings have been saved.",
                         duration=4000, position=InfoBarPosition.TOP, parent=self)
+        return True

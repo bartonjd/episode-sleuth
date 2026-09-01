@@ -1,4 +1,4 @@
-# PEP 517/518 build configuration.
+# PEP 517/518 build configuration for EpisodeSleuth.
 #
 # Project metadata (dependencies, entry points, version) is defined in
 # setup.py so that requirements.txt stays the single source of truth for the

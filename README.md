@@ -1,6 +1,6 @@
-# Phonetic Audio Fingerprinting for TV & Movie Identification
+# EpisodeSleuth - Phonetic Audio Fingerprinting for TV & Movie Identification
 
-A **dialogue-based episode identifier** for DVD rips and TV recordings. Unlike
+**EpisodeSleuth** is a **dialogue-based episode identifier** for DVD rips and TV recordings. Unlike
 acoustic fingerprinting systems (which match audio waveforms), this system
 matches **what is being said** - the semantic content of the dialogue. It builds
 a phonetic reference database from **subtitles** (text), then identifies unknown
@@ -402,7 +402,7 @@ Build prerequisites (build machine only):
 
 Because the package is self-signed, install it by trusting the generated
 certificate once (the script prints the exact commands), then double-click the
-`.msix` or run `Add-AppxPackage -Path .\DVDEpisodeIdentifier_1.0.0.0.msix`. A
+`.msix` or run `Add-AppxPackage -Path .\EpisodeSleuth_1.0.0.0.msix`. A
 certificate from a real CA would remove the trust step for end users.
 
 Packaging files live in `packaging\` (`AppxManifest.xml`, `make_icons.py`, and
@@ -421,3 +421,64 @@ result is missing or below confidence threshold.
 | `min_query_tokens` | Skip fuzzy when the query has fewer phonetic tokens than this - too little signal to trust (default 8) |
 | `min_margin` | The top candidate must beat the runner-up by this confidence gap, else the match is treated as ambiguous and rejected (default 0.12) |
 | `weight` | Scale applied to the raw fuzzy confidence before thresholding (default 1.0) |
+
+## Contributing
+
+Contributions are welcome - bug reports, feature ideas, and pull requests.
+
+**How changes get merged (who can push):**
+
+- The **`main` branch is protected**. Only the repository owner (**bartonjd**)
+  and any collaborators the owner explicitly adds on GitHub can push directly to
+  it. This is enforced by GitHub repository permissions, *not* by the software
+  license - an open-source license controls what you may do with the code, but
+  it never grants anyone write access to this specific repository.
+- **Everyone else contributes by forking and opening a pull request:**
+
+  ```bash
+  # 1. Fork the repo on GitHub, then clone your fork
+  git clone https://github.com/<your-user>/episode-sleuth.git
+  cd episode-sleuth
+
+  # 2. Create a feature branch
+  git checkout -b my-improvement
+
+  # 3. Make changes, run the tests, then commit and push to YOUR fork
+  pytest
+  git commit -am "Describe your change"
+  git push origin my-improvement
+
+  # 4. Open a Pull Request against bartonjd/episode-sleuth -> main
+  ```
+
+- The owner reviews each pull request and merges it when it is ready. This keeps
+  full control of what lands in the official project with the owner, while still
+  letting anyone use, modify, and propose changes to the code.
+
+By submitting a contribution you agree that it is licensed under the project's
+Apache License 2.0 (see below), per section 5 of that license.
+
+## License
+
+EpisodeSleuth is licensed under the **Apache License, Version 2.0**. See the
+[LICENSE](LICENSE) and [NOTICE](NOTICE) files for the full text.
+
+Apache-2.0 was chosen (over MIT) because it gives the project a bit more
+protection while remaining permissive and business-friendly:
+
+- **You may** use, modify, distribute, and build commercial products on top of
+  EpisodeSleuth, for free, without asking permission.
+- **You must** keep the copyright and license notices, state any changes you
+  made to the files, and include a copy of the license with any redistribution.
+- It adds an **explicit patent grant** (contributors can't later sue users over
+  patents covering their contributions) and a **trademark clause** (the license
+  doesn't hand out rights to the "EpisodeSleuth" name/branding) - protections
+  MIT does not spell out.
+
+Note that the *license* and *repository push access* are two separate things:
+the Apache-2.0 license governs everyone's rights to the code, while who can push
+to this repo's `main` branch is controlled by GitHub permissions (see
+[Contributing](#contributing) above).
+
+Third-party components (Vosk, PySide6, PySide6-Fluent-Widgets, FFmpeg, etc.)
+remain under their own licenses; see [NOTICE](NOTICE) for details.

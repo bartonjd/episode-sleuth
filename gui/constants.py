@@ -20,7 +20,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from constants import DEFAULT_DB_PATH, DEFAULT_CONFIG_PATH  # noqa: E402
 
-APP_TITLE = "DVD Episode Identifier"
+APP_TITLE = "EpisodeSleuth"
 DEFAULT_DB = os.path.join(HERE, DEFAULT_DB_PATH)
 DEFAULT_CONFIG = os.path.join(HERE, DEFAULT_CONFIG_PATH)
 
