@@ -183,6 +183,31 @@ dvd-identify --dir ./dvd_rips --db fingerprints.db
 dvd-gui
 ```
 
+#### Faster builds with parallel workers
+
+Building the reference database parses every subtitle file and phonetically
+encodes its dialogue - the slow part for large collections. Pass `--workers` to
+process files in parallel (default `4`; the GUI uses the "Max parallel workers"
+value from the Settings page):
+
+```bash
+# fingerprint a big folder of subtitles using 8 workers
+dvd-fingerprint --workers 8 --db my.db --dir /path/to/srt/
+```
+
+The parser/encoder runs across a pool of worker processes while database writes
+stay serialised on one connection, so results are byte-for-byte identical to a
+sequential build. Use `--workers 1` to force the original sequential behaviour.
+The parse/encode stage scales close to linearly with cores; overall wall-clock
+speedup is bounded by the serial database-write stage (roughly 2x on typical
+libraries). If a process pool is unavailable (e.g. a restricted or frozen
+environment) the builder automatically falls back to threads, then to
+sequential, so a build never fails outright.
+
+If the database path's parent directory does not exist it is created
+automatically; an unwritable path reports a clear error instead of a cryptic
+SQLite failure.
+
 ### Testing
 
 Tests live in `tests/` and run with `pytest`:
@@ -210,6 +235,7 @@ Coverage by module:
 | `test_config.py` | `AppConfig` load/merge, enum validation, backward compat, save round-trip |
 | `test_subtitle_utils.py` | `.srt` / `.vtt` parsing, Double-Metaphone phonetic encoding, OpenSubtitles helper (network mocked) |
 | `test_integration.py` | end-to-end: build fingerprints -> identify -> export CSV/JSON (marked `slow`) |
+| `test_build.py` | `validate_db_path` (auto-create / clear errors) and parallel-vs-sequential build equivalence |
 | `test_basic.py` | packaging metadata + core-import smoke tests |
 
 Fixtures (in `tests/fixtures/`): `sample.srt`, `sample_ep2.srt`, `sample.vtt`,

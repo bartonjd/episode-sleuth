@@ -19,6 +19,7 @@ import json
 import hashlib
 import logging
 import sqlite3
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Iterable, Optional, Tuple
 
@@ -280,11 +281,43 @@ class MediaInfo:
         return f"{self.title}{y}{se}"
 
 
+def validate_db_path(db_path: str) -> None:
+    """Ensure the database's parent directory exists, creating it if needed.
+
+    SQLite raises a cryptic ``unable to open database file`` error when the
+    parent directory of ``db_path`` does not exist. This validates the path up
+    front and auto-creates the parent directory so the user does not have to.
+    Raises :class:`ValueError` with a clear message if the directory cannot be
+    created (e.g. a permission error or a file where a directory is expected).
+
+    In-memory databases (``:memory:`` and ``file::memory:`` URIs) and bare
+    filenames with no directory component are accepted as-is.
+    """
+    if not db_path or db_path == ":memory:" or db_path.startswith("file::memory:"):
+        return
+    parent = Path(db_path).expanduser().resolve().parent
+    if parent.exists():
+        if not parent.is_dir():
+            raise ValueError(
+                f"Cannot use database path {db_path!r}: {parent} exists but is "
+                f"not a directory.")
+        return
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        logging.info("Created database directory: %s", parent)
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot create database directory {parent}: {exc}") from exc
+
+
 class FingerprintDB:
     """SQLite store mapping shingle hashes -> media + timestamp."""
 
     def __init__(self, path: str):
         self.path = path
+        # Make sure the parent directory exists before SQLite tries to open the
+        # file, otherwise it fails with a cryptic "unable to open database file".
+        validate_db_path(path)
         # check_same_thread=False so a connection opened in one thread stays
         # usable if handed to another; the batch identifier opens a separate
         # connection per worker (reads only), which SQLite handles concurrently.

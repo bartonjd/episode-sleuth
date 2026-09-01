@@ -89,10 +89,15 @@ class BuildInterface(QWidget):
         self.cfg.update(last_subtitle_source=path, last_show_title=show_title)
         self.cfg.save()
         flag = "--dir" if os.path.isdir(path) else "--file"
+        # Build in parallel using the shared "Max parallel workers" setting
+        # (Settings page). Folder builds fan out across worker threads; a single
+        # file falls back to sequential inside the builder automatically.
+        workers = int(self.cfg.get("max_workers", 4))
         # Run the builder as a module (BuildWorker runs with cwd=HERE, so the
         # cli package resolves). This is the new home of create_fingerprint.py.
         cmd = [sys.executable, "-m", "cli.build_fingerprints",
-               flag, path, "--db", self.win.current_db_path() or DEFAULT_DB]
+               flag, path, "--db", self.win.current_db_path() or DEFAULT_DB,
+               "--workers", str(workers)]
         if show_title:
             cmd += ["--show-title", show_title]
         self._run(cmd)
