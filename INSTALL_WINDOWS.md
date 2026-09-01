@@ -8,6 +8,12 @@ programming experience required.
 > setup script which handles everything below. The manual steps are here in
 > case you prefer to do it yourself.
 
+> **Just want a runnable app with no Python at all?** Build (or obtain) a
+> standalone executable instead - see
+> [BUILD_EXECUTABLES.md](BUILD_EXECUTABLES.md). You get a
+> `dist\EpisodeSleuth\EpisodeSleuth.exe` you can double-click; only `ffmpeg` is
+> still needed at run time.
+
 ---
 
 ## What you need

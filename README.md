@@ -379,6 +379,30 @@ Useful switches: `-NoVenv` (use system Python), `-NoModel` (skip the STT model
 download), `-NoShortcut`, and `-Force` (reinstall packages / re-download the
 model).
 
+### Build a standalone executable (Windows or Linux)
+
+Want a runnable app with **no Python required** on the target machine? Build a
+self-contained executable with PyInstaller - the cleanest launch method (no
+`fluent_launcher.bat`, just double-click the produced binary):
+
+```powershell
+# Windows -> dist\EpisodeSleuth\EpisodeSleuth.exe
+powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+```
+
+```bash
+# Linux / macOS -> dist/EpisodeSleuth/EpisodeSleuth
+./build_exe.sh
+```
+
+Both wrappers build inside a throwaway `.buildvenv` and drive one shared,
+cross-platform spec (`episodesleuth.spec`). Switches: `-BundleModel` /
+`BUNDLE_MODEL=1` packs the Vosk model for a fully offline app; `-OneFile` /
+`ONEFILE=1` produces a single file instead of a folder. A normal one-folder
+build is roughly ~400 MB (mostly Qt + Vosk); `ffmpeg` is still needed at run
+time and is not bundled. Full details in
+**[BUILD_EXECUTABLES.md](BUILD_EXECUTABLES.md)**.
+
 ### Build a standalone MSIX installer (Windows)
 
 To produce a self-contained `.msix` that installs the app **without needing

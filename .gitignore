@@ -30,11 +30,14 @@ venv/
 .buildvenv/
 build/
 dist/
+# Ignore auto-generated PyInstaller specs, but keep our hand-authored build spec.
 *.spec
+!episodesleuth.spec
 *.msix
 *.pfx
 *.cer
 Launch_DVD_Identifier.bat
+Launch_EpisodeSleuth.bat
 
 # OS / editor
 .DS_Store
