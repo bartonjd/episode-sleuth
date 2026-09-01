@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     FluentIcon as FIF, PrimaryPushButton, PushButton, SpinBox, ComboBox,
     ProgressBar, InfoBar, InfoBarPosition, BodyLabel, TitleLabel, CaptionLabel,
-    StrongBodyLabel,
+    StrongBodyLabel, MessageBox,
 )
 
 from audio_fingerprint.gui.constants import DEFAULT_DB
@@ -26,6 +26,14 @@ try:
     import stt_utils
 except Exception:  # pragma: no cover - only if deps are absent
     stt_utils = None
+
+# Core database helpers, imported defensively so the Settings page still loads
+# even if the heavy engine dependencies are unavailable.
+try:
+    from fingerprint_core import FingerprintDB, validate_db_path
+except Exception:  # pragma: no cover - only if deps are absent
+    FingerprintDB = None
+    validate_db_path = None
 
 
 class SettingsInterface(QWidget):
@@ -51,7 +59,9 @@ class SettingsInterface(QWidget):
                              or (DEFAULT_DB if os.path.exists(DEFAULT_DB) else ""))
         db_browse = PushButton("Browse", self, FIF.FOLDER)
         db_browse.clicked.connect(self._pick_db)
-        db_card.add(self.db_edit, db_browse)
+        db_new = PushButton("Create New Database", self, FIF.ADD)
+        db_new.clicked.connect(self._create_db)
+        db_card.add(self.db_edit, db_browse, db_new)
         root.addWidget(db_card)
 
         # engine config card
@@ -156,11 +166,105 @@ class SettingsInterface(QWidget):
         self._refresh_model_ui()
 
     def _pick_db(self):
-        p, _ = QFileDialog.getOpenFileName(
-            self, "Select fingerprint database", self.db_edit.text().strip(),
-            "SQLite DB (*.db);;All files (*.*)")
-        if p:
+        # Save mode lets the user either pick an existing database or type a new
+        # filename that does not yet exist, instead of the "File not found"
+        # dead-end an open dialog produces.
+        dlg = QFileDialog(self, "Select or name a fingerprint database")
+        dlg.setAcceptMode(QFileDialog.AcceptSave)
+        dlg.setFileMode(QFileDialog.AnyFile)
+        dlg.setOption(QFileDialog.DontConfirmOverwrite, True)
+        dlg.setNameFilter("SQLite Database (*.db);;All files (*.*)")
+        dlg.setDefaultSuffix("db")
+        start = self.db_edit.text().strip()
+        if start:
+            dlg.selectFile(start)
+        if not dlg.exec():
+            return
+        chosen = dlg.selectedFiles()
+        if not chosen:
+            return
+        p = chosen[0]
+        self.db_edit.setText(p)
+        # If the chosen path does not exist yet, offer to create it right away so
+        # later operations (Build Library / Identify) do not fail.
+        if not os.path.exists(p):
+            self._offer_create_db(p)
+
+    def _create_db(self):
+        # A dedicated "Create New Database" flow: prompt for a filename, then
+        # create a fresh, empty database with the full schema.
+        dlg = QFileDialog(self, "Create new fingerprint database")
+        dlg.setAcceptMode(QFileDialog.AcceptSave)
+        dlg.setFileMode(QFileDialog.AnyFile)
+        dlg.setNameFilter("SQLite Database (*.db);;All files (*.*)")
+        dlg.setDefaultSuffix("db")
+        start = self.db_edit.text().strip()
+        if start:
+            dlg.selectFile(start)
+        if not dlg.exec():
+            return
+        chosen = dlg.selectedFiles()
+        if not chosen:
+            return
+        p = chosen[0]
+        if os.path.exists(p):
+            box = MessageBox(
+                "Database already exists",
+                f"A file already exists at:\n{p}\n\nUse this existing database?",
+                self.win)
+            box.yesButton.setText("Use it")
+            box.cancelButton.setText("Cancel")
+            if box.exec():
+                self.db_edit.setText(p)
+            return
+        if self._init_new_db(p):
             self.db_edit.setText(p)
+
+    def _offer_create_db(self, path: str) -> bool:
+        """Ask whether to create a missing database, and create it if confirmed.
+
+        Returns True if a database now exists at ``path`` (created or already
+        present), False otherwise.
+        """
+        box = MessageBox(
+            "Database does not exist",
+            f"No database was found at:\n{path}\n\nCreate it now?",
+            self.win)
+        box.yesButton.setText("Create it")
+        box.cancelButton.setText("Not now")
+        if not box.exec():
+            return False
+        return self._init_new_db(path)
+
+    def _init_new_db(self, path: str) -> bool:
+        """Create parent directories and initialise an empty database + schema.
+
+        Uses the engine's :class:`FingerprintDB`, which validates the path,
+        auto-creates the parent directory and applies the full table schema.
+        Returns True on success.
+        """
+        if FingerprintDB is None:
+            InfoBar.error(
+                "Unavailable",
+                "The database engine could not be loaded, so a new database "
+                "cannot be created.",
+                duration=6000, position=InfoBarPosition.TOP, parent=self)
+            return False
+        try:
+            if validate_db_path is not None:
+                validate_db_path(path)
+            db = FingerprintDB(path)
+            db.conn.close()
+        except Exception as exc:
+            InfoBar.error(
+                "Could not create database", str(exc),
+                duration=8000, position=InfoBarPosition.TOP, parent=self)
+            return False
+        InfoBar.success(
+            "Database ready",
+            f"An empty fingerprint database was created at {path}.",
+            duration=5000, position=InfoBarPosition.TOP, parent=self)
+        return True
 
     def _pick_engine(self):
         p, _ = QFileDialog.getOpenFileName(
@@ -330,6 +434,12 @@ class SettingsInterface(QWidget):
                 duration=6000, position=InfoBarPosition.TOP, parent=self)
             self._refresh_model_ui()
             return
+
+        # If a database path is set but the file does not exist yet, offer to
+        # create it now so Build Library / Identify do not fail later.
+        db_path = self.db_edit.text().strip()
+        if db_path and not os.path.exists(db_path):
+            self._offer_create_db(db_path)
 
         self.cfg.update(
             db_path=self.db_edit.text().strip(),
