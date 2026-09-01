@@ -18,12 +18,20 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     FluentIcon as FIF, PrimaryPushButton, PushButton, SpinBox, DoubleSpinBox,
     TableWidget, ProgressBar, StateToolTip, InfoBar, InfoBarPosition,
-    BodyLabel, TitleLabel, CaptionLabel,
+    BodyLabel, TitleLabel, CaptionLabel, MessageBox, SearchLineEdit, ToolButton,
 )
 
 from engine import (
     FileResult, write_csv, write_json, episode_id_str,
 )
+
+# Speech-to-text helpers are imported defensively so the page still loads even
+# when the optional STT deps (pydub, vosk) are absent - it is only used to check
+# whether the Vosk model is present before an identify run.
+try:
+    import stt_utils
+except Exception:  # pragma: no cover - only if deps are missing
+    stt_utils = None
 
 from audio_fingerprint.gui.constants import (
     HERE, COLOR_OK, COLOR_MEDIUM, COLOR_REVIEW,
@@ -34,7 +42,10 @@ from audio_fingerprint.gui.workers import IdentifyWorker
 
 class IdentifyInterface(QWidget):
     COLS = ["", "File", "Status", "Episode", "Episode Title",
-            "Suggested Name", "Conf.", "Method", "Agree", "Notes"]
+            "Suggested Name", "Match %", "Samples Agree", "Notes"]
+    # column indices (kept in one place so row population and filtering stay in sync)
+    C_CHECK, C_FILE, C_STATUS, C_EPISODE, C_TITLE = 0, 1, 2, 3, 4
+    C_SUGGESTED, C_MATCH, C_AGREE, C_NOTES = 5, 6, 7, 8
 
     def __init__(self, window: "MainWindow"):
         super().__init__()
@@ -131,6 +142,18 @@ class IdentifyInterface(QWidget):
         actions.addWidget(self.export_csv_btn)
         root.addLayout(actions)
 
+        # --- filter / search box ---
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(10)
+        self.filter_edit = SearchLineEdit()
+        self.filter_edit.setPlaceholderText(
+            "Filter results by file name, episode, or title...")
+        self.filter_edit.textChanged.connect(self._filter_results)
+        self.filter_edit.setClearButtonEnabled(True)
+        filter_row.addWidget(BodyLabel("Filter"))
+        filter_row.addWidget(self.filter_edit, 1)
+        root.addLayout(filter_row)
+
         # --- results table ---
         self.table = TableWidget()
         self.table.setColumnCount(len(self.COLS))
@@ -139,15 +162,24 @@ class IdentifyInterface(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setWordWrap(False)
+        # A clear tooltip explaining what "Samples Agree" means.
+        agree_hdr = self.table.horizontalHeaderItem(self.C_AGREE)
+        if agree_hdr is not None:
+            agree_hdr.setToolTip("Fraction of samples that agree on this episode")
+        # All columns are user-resizable (Interactive) except the fixed-width
+        # checkbox and the narrow Notes-icon column.
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 40)
-        hdr.setSectionResizeMode(1, QHeaderView.Stretch)      # File
-        hdr.setSectionResizeMode(4, QHeaderView.Stretch)      # Episode Title
-        hdr.setSectionResizeMode(5, QHeaderView.Stretch)      # Suggested Name
-        hdr.setSectionResizeMode(9, QHeaderView.Stretch)      # Notes
-        for c in (2, 3, 6, 7, 8):  # Status, Episode, Conf, Method, Agree
-            hdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(QHeaderView.Interactive)
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(self.C_CHECK, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(self.C_NOTES, QHeaderView.Fixed)
+        widths = {
+            self.C_CHECK: 40, self.C_FILE: 230, self.C_STATUS: 80,
+            self.C_EPISODE: 90, self.C_TITLE: 200, self.C_SUGGESTED: 230,
+            self.C_MATCH: 80, self.C_AGREE: 110, self.C_NOTES: 46,
+        }
+        for col, w in widths.items():
+            self.table.setColumnWidth(col, w)
         root.addWidget(self.table, 1)
 
     # ----- pickers -----
@@ -180,6 +212,13 @@ class IdentifyInterface(QWidget):
         if not source or not os.path.exists(source):
             self._error("No source selected",
                         "Pick a folder or a single file to identify.")
+            return
+
+        # The Vosk speech-to-text model is required for identification. If it is
+        # missing, prompt the user to download it instead of failing mid-run.
+        model_size = self.cfg.get("vosk_model_size", "small")
+        if stt_utils is not None and stt_utils.get_model_path(model_size) is None:
+            self._prompt_model_download(model_size)
             return
 
         # persist the choices the user just made
@@ -225,6 +264,52 @@ class IdentifyInterface(QWidget):
         self.worker.failed.connect(self._on_failed)
         self.worker.wasCancelled.connect(self._on_cancelled)
         self.worker.start()
+
+    def _prompt_model_download(self, model_size: str):
+        """Ask the user to download the missing Vosk model, then jump to Settings
+        and kick off the download when they agree."""
+        label = "large (~1.8 GB)" if model_size == "large" else "small (~39 MB)"
+        box = MessageBox(
+            "Vosk model not found",
+            f"The {label} speech-to-text model is required to identify episodes "
+            "but has not been downloaded yet.\n\nDownload it now?",
+            self.window())
+        box.yesButton.setText("Download")
+        box.cancelButton.setText("Cancel")
+        if not box.exec():
+            return
+        # Switch to Settings, select the needed size, and start the download.
+        settings = self.win.settings_interface
+        self.win.switchTo(settings)
+        try:
+            idx = settings._model_values.index(model_size)
+            settings.model_combo.setCurrentIndex(idx)
+        except (ValueError, AttributeError):
+            pass
+        if hasattr(settings, "_start_model_download"):
+            settings._start_model_download()
+
+    def _filter_results(self, text: str = ""):
+        """Hide result rows that do not match the filter text (matched against
+        the file name, episode id, episode title and suggested name)."""
+        q = (text if text is not None else self.filter_edit.text()).strip().lower()
+        for row in range(self.table.rowCount()):
+            if not q:
+                self.table.setRowHidden(row, False)
+                continue
+            hay = []
+            for col in (self.C_FILE, self.C_EPISODE, self.C_TITLE, self.C_SUGGESTED):
+                it = self.table.item(row, col)
+                if it is not None:
+                    hay.append(it.text().lower())
+            self.table.setRowHidden(row, q not in " ".join(hay))
+
+    def _show_notes(self, filename: str, notes: str):
+        box = MessageBox("Notes", f"{filename}\n\n{notes or 'No notes.'}",
+                         self.window())
+        box.cancelButton.setVisible(False)
+        box.yesButton.setText("Close")
+        box.exec()
 
     def _cancel(self):
         if self.worker and self.worker.isRunning():
@@ -278,20 +363,20 @@ class IdentifyInterface(QWidget):
             suggested_disp = "-"
         else:
             suggested_disp = suggested or "-"
-        values = [
-            data["filename"],
-            status_text,
-            data["episode_id"],
-            data.get("episode_title", ""),
-            suggested_disp,
-            f"{conf:.0%}",
-            data["method"],
-            data["agreement"],
-            notes,
-        ]
-        for col, text in enumerate(values, start=1):
+        # Text columns (Notes is a separate icon widget, added below).
+        values = {
+            self.C_FILE: data["filename"],
+            self.C_STATUS: status_text,
+            self.C_EPISODE: data["episode_id"],
+            self.C_TITLE: data.get("episode_title", ""),
+            self.C_SUGGESTED: suggested_disp,
+            self.C_MATCH: f"{conf:.0%}",
+            self.C_AGREE: data["agreement"],
+        }
+        centered = {self.C_STATUS, self.C_EPISODE, self.C_MATCH, self.C_AGREE}
+        for col, text in values.items():
             item = QTableWidgetItem(str(text))
-            if col in (2, 3, 6, 8):  # status, episode, conf, agree centered
+            if col in centered:
                 item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, col, item)
 
@@ -300,6 +385,25 @@ class IdentifyInterface(QWidget):
             it = self.table.item(row, col)
             if it is not None:
                 it.setBackground(brush)
+
+        # Notes column: a compact info (i) button that opens the full note text.
+        notes_btn = ToolButton(FIF.INFO)
+        notes_btn.setFixedSize(26, 26)
+        notes_btn.setToolTip("Show notes")
+        fname = data["filename"]
+        notes_btn.clicked.connect(
+            lambda _=False, fn=fname, nt=notes: self._show_notes(fn, nt))
+        wrap = QWidget()
+        wrap_lay = QHBoxLayout(wrap)
+        wrap_lay.setContentsMargins(0, 0, 0, 0)
+        wrap_lay.addStretch(1)
+        wrap_lay.addWidget(notes_btn)
+        wrap_lay.addStretch(1)
+        self.table.setCellWidget(row, self.C_NOTES, wrap)
+
+        # Re-apply the current filter so newly added rows respect it.
+        if self.filter_edit.text().strip():
+            self._filter_results(self.filter_edit.text())
 
     def _teardown_run(self):
         self.identify_btn.setEnabled(True)

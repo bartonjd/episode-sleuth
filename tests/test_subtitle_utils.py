@@ -3,8 +3,33 @@ import pytest
 
 from subtitle_utils import (
     parse_srt, parse_vtt, parse_subtitle_file, download_opensubtitles,
+    strip_language_code, clean_subtitle_filename, parse_episode_info,
 )
 from fingerprint_core import phonetic_encode_word, phonetic_token_stream
+
+
+# ---------------------------------------------------------------------------
+# filename language-code stripping
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name,expected", [
+    ("The Clown.en.srt", "The Clown.srt"),
+    ("Matlock.S01E04.eng.srt", "Matlock.S01E04.srt"),
+    ("Show.fr.vtt", "Show.vtt"),
+    ("Show.PT.SRT", "Show.SRT"),          # case-insensitive
+    ("The Clown.srt", "The Clown.srt"),   # no code -> unchanged
+    ("Movie.2020.mkv", "Movie.2020.mkv"), # non-subtitle -> unchanged
+])
+def test_strip_language_code(name, expected):
+    assert strip_language_code(name) == expected
+
+
+def test_language_code_not_in_episode_title():
+    # Regression for the "The Clown en" bug: the trailing ".en" language code
+    # must never leak into the recovered episode title.
+    _, _, title = parse_episode_info("Matlock (1986) - S04E05 - The Clown.en.srt")
+    assert title == "The Clown"
+    assert "en" not in clean_subtitle_filename("The Clown.en.srt").lower().split()
 
 
 # ---------------------------------------------------------------------------

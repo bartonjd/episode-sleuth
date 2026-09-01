@@ -41,6 +41,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+# Resolve to a full, absolute path so shortcut IconLocation / TargetPath values
+# are never relative (a relative icon path makes Windows fall back to the generic
+# Python icon on the Start-menu / Desktop shortcut).
+$ProjectDir = (Resolve-Path $ProjectDir).Path
 Set-Location $ProjectDir
 
 $VoskModelName = "vosk-model-small-en-us-0.15"
@@ -208,7 +212,12 @@ if (-not $NoShortcut) {
             $sc.TargetPath = $launcher
         }
         $sc.WorkingDirectory = $ProjectDir
-        if (Test-Path $icon) { $sc.IconLocation = $icon }
+        # IconLocation needs an absolute path plus an icon index (",0"); without
+        # the index Windows may ignore the .ico and show the generic Python icon.
+        if (Test-Path $icon) {
+            $iconFull = (Resolve-Path $icon).Path
+            $sc.IconLocation = "$iconFull,0"
+        }
         $sc.Description = "Identify DVD-ripped episodes for Plex"
         $sc.Save()
     }

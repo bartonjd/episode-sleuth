@@ -59,6 +59,24 @@ _JUNK_RE = re.compile(r"\b(" + "|".join(re.escape(t) for t in _JUNK_TOKENS) + r"
                       re.IGNORECASE)
 
 
+# A two/three-letter language code that some subtitle tools append just before
+# the extension, e.g. "The Clown.en.srt" or "Matlock.S01E04.eng.srt". Stripped
+# before any title text is recovered so the code never leaks into the parsed
+# episode title (the "The Clown en" bug).
+_LANG_CODE_RE = re.compile(r"\.[a-z]{2,3}\.(srt|vtt)$", re.IGNORECASE)
+
+
+def strip_language_code(filename: str) -> str:
+    """Remove a trailing language code that sits just before a subtitle extension.
+
+    ``"The Clown.en.srt"`` -> ``"The Clown.srt"`` and
+    ``"Matlock.S01E04.eng.srt"`` -> ``"Matlock.S01E04.srt"``. The subtitle
+    extension is preserved so downstream format detection still works. Non
+    subtitle names (and names without a language code) are returned unchanged.
+    """
+    return _LANG_CODE_RE.sub(r".\1", filename)
+
+
 def clean_subtitle_filename(filename: str) -> str:
     """Return the base name with release/rip junk stripped.
 
@@ -68,6 +86,9 @@ def clean_subtitle_filename(filename: str) -> str:
     string like "Matlock (1986) - S01E04 - The Stripper" suitable for both
     episode-number parsing and episode-title recovery.
     """
+    # strip a trailing language code (".en.srt") before anything else so it can
+    # never survive into the recovered episode title.
+    filename = strip_language_code(filename)
     base = os.path.splitext(os.path.basename(filename))[0]
     # drop bracketed / braced groups outright (release tags, checksums, etc.)
     base = re.sub(r"[\[\{].*?[\]\}]", " ", base)
@@ -490,7 +511,7 @@ def _download_and_extract(url: str, out_dir: str, headers: dict,
     ext = ".vtt" if ".vtt" in lower_url else ".srt"
     fallback_base = base_name or f"sub_{abs(hash(url)) % 10**8}"
 
-    # gzip (.gz) — most legacy SubDownloadLink results
+    # gzip (.gz) - most legacy SubDownloadLink results
     if lower_url.endswith(".gz") or content[:2] == b"\x1f\x8b":
         try:
             data = gzip.decompress(content)
