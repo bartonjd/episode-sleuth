@@ -1,9 +1,17 @@
 # Phonetic Audio Fingerprinting for TV & Movie Identification
 
-A "Shazam for dialogue". This system matches **what is being said** by building
-a reference database from **subtitles**, then identifying unknown audio (e.g. a
-DVD rip or a live TV recording) by transcribing it and matching the dialogue
-against the database.
+A **dialogue-based episode identifier** for DVD rips and TV recordings. Unlike
+acoustic fingerprinting systems (which match audio waveforms), this system
+matches **what is being said** - the semantic content of the dialogue. It builds
+a phonetic reference database from **subtitles** (text), then identifies unknown
+audio by transcribing it with speech-to-text and matching the dialogue against
+the database.
+
+**Key distinction:** This is a **phonetic/semantic** system, not acoustic. It
+matches words and their phonetic representations, not audio waveforms or
+spectrograms. If the dialogue is the same but spoken by different actors, in a
+different language dub, or with different background music, it will still match
+- because the system fingerprints the text, not the sound.
 
 ### Workflow at a glance
 
