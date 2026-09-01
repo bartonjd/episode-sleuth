@@ -9,10 +9,15 @@ from __future__ import annotations
 import os
 import sys
 import logging
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
+
+# Custom application icon (256x256 .ico bundled under packaging/). Shared by the
+# main window title bar, the Windows taskbar, and the QApplication default.
+APP_ICON_PATH = Path(__file__).resolve().parent.parent / "packaging" / "app.ico"
 
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF,
@@ -43,8 +48,23 @@ class MainWindow(FluentWindow):
 
         self.resize(1080, 760)
         self.setWindowTitle(APP_TITLE)
+        # Prefer the bundled custom icon; fall back to a Fluent icon if missing.
         try:
-            self.setWindowIcon(QIcon(FIF.ALBUM.path()))
+            if APP_ICON_PATH.exists():
+                self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
+                # Make Windows group the taskbar entry under our own AppUserModelID
+                # so the taskbar shows the custom icon instead of the generic
+                # Python one. Harmless / no-op on non-Windows platforms.
+                if sys.platform == "win32":
+                    try:
+                        import ctypes
+                        myappid = "abacusai.episode_sleuth.dvd_identifier.1"
+                        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                            myappid)
+                    except Exception:
+                        pass
+            else:
+                self.setWindowIcon(QIcon(FIF.ALBUM.path()))
         except Exception:
             pass
 
@@ -109,6 +129,10 @@ def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
+    # Set the app-wide default icon (used for any window that does not set its
+    # own, and as the fallback taskbar icon).
+    if APP_ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

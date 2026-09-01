@@ -7,6 +7,8 @@ REM The GUI now lives in the audio_fingerprint.gui package, so we launch it
 REM with "python -m audio_fingerprint.gui". That requires the PARENT of this
 REM folder to be the working directory (this folder must be named
 REM "audio_fingerprint"), so cd there first.
+REM The window / taskbar icon is set in code from packaging\app.ico (see
+REM gui\main_window.py); no icon needs to be passed on the command line.
 cd /d "%~dp0.."
 
 REM Use pythonw (no console window) when available; fall back to python.

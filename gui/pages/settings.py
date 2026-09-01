@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     FluentIcon as FIF, PrimaryPushButton, PushButton, SpinBox, ComboBox,
     ProgressBar, InfoBar, InfoBarPosition, BodyLabel, TitleLabel, CaptionLabel,
+    StrongBodyLabel,
 )
 
 from audio_fingerprint.gui.constants import DEFAULT_DB
@@ -119,13 +120,18 @@ class SettingsInterface(QWidget):
         self.model_status = CaptionLabel("")
         stt_grid.addWidget(self.model_status, 1, 1, 1, 2)
 
-        # Progress bar + percentage/MB caption, hidden until a download runs.
+        # Progress bar + percentage caption, hidden until a download runs.
+        # Spans the full width of the card and is made taller so a running
+        # download is clearly visible next to the Download button.
         self.model_progress = ProgressBar()
+        self.model_progress.setFixedHeight(10)
         self.model_progress.setVisible(False)
-        stt_grid.addWidget(self.model_progress, 2, 1, 1, 2)
-        self.model_progress_label = CaptionLabel("")
+        stt_grid.addWidget(self.model_progress, 2, 0, 1, 3)
+        # A large, prominent percentage / MB readout (StrongBodyLabel is bolder
+        # and bigger than the CaptionLabel used elsewhere).
+        self.model_progress_label = StrongBodyLabel("")
         self.model_progress_label.setVisible(False)
-        stt_grid.addWidget(self.model_progress_label, 3, 1, 1, 2)
+        stt_grid.addWidget(self.model_progress_label, 3, 0, 1, 3)
 
         stt_grid.addWidget(
             CaptionLabel("The large model is far more accurate on clean DVD-rip "
@@ -262,6 +268,19 @@ class SettingsInterface(QWidget):
         self.model_progress.setValue(0)
         self.model_progress_label.setVisible(True)
         self.model_progress_label.setText("Starting download...")
+
+        # Let the user know the download is running and set expectations for the
+        # large model, which can take several minutes.
+        if size == "large":
+            msg = ("Downloading the large Vosk model (~1.8 GB). This may take "
+                   "several minutes - progress is shown below the button.")
+        else:
+            msg = ("Downloading the small Vosk model (~39 MB). Progress is "
+                   "shown below the button.")
+        InfoBar.info(
+            "Downloading Vosk model", msg,
+            duration=6000, position=InfoBarPosition.TOP, parent=self)
+
         self._refresh_model_ui()
         self._dl_worker.start()
 
