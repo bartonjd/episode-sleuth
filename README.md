@@ -487,17 +487,10 @@ Apache License 2.0 (see below), per section 5 of that license.
 EpisodeSleuth is licensed under the **Apache License, Version 2.0**. See the
 [LICENSE](LICENSE) and [NOTICE](NOTICE) files for the full text.
 
-Apache-2.0 was chosen (over MIT) because it gives the project a bit more
-protection while remaining permissive and business-friendly:
-
 - **You may** use, modify, distribute, and build commercial products on top of
   EpisodeSleuth, for free, without asking permission.
 - **You must** keep the copyright and license notices, state any changes you
   made to the files, and include a copy of the license with any redistribution.
-- It adds an **explicit patent grant** (contributors can't later sue users over
-  patents covering their contributions) and a **trademark clause** (the license
-  doesn't hand out rights to the "EpisodeSleuth" name/branding) - protections
-  MIT does not spell out.
 
 Note that the *license* and *repository push access* are two separate things:
 the Apache-2.0 license governs everyone's rights to the code, while who can push
