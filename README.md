@@ -1,4 +1,4 @@
-# EpisodeSleuth - Phonetic Audio Fingerprinting for TV & Movie Identification
+# EpisodeSleuth - Speech Fingerprinting for TV & Movie Identification
 
 **EpisodeSleuth** is a **dialogue-based episode identifier** for DVD rips and TV recordings. Unlike
 acoustic fingerprinting systems (which match audio waveforms), this system
