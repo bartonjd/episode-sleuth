@@ -65,6 +65,21 @@ hiddenimports += collect_submodules("metaphone")
 hiddenimports += collect_submodules("audio_fingerprint")
 hiddenimports += collect_submodules("engine")
 
+# Top-level project modules that the GUI imports (stt_utils, subtitle_utils, etc.)
+# and their heavy dependencies (pydub, speech_recognition) must be explicit.
+hiddenimports += [
+    "stt_utils",
+    "subtitle_utils",
+    "fingerprint_core",
+    "config",
+    "constants",
+    "logging_config",
+    "gui_config",
+]
+# STT stack: pydub (audio manipulation) and speech_recognition (wrapper).
+hiddenimports += collect_submodules("pydub")
+hiddenimports += collect_submodules("speech_recognition")
+
 # Optionally bundle the offline Vosk model for a no-download experience.
 if BUNDLE_MODEL:
     _models = os.path.join(PROJECT_ROOT, "models")
