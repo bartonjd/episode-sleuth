@@ -1,6 +1,14 @@
 <#
 .SYNOPSIS
-    One-shot Windows setup for EpisodeSleuth.
+    One-shot Windows setup for EpisodeSleuth (source / developer install).
+
+.NOTES
+    Most end users do NOT need this script. If you just want to run the app
+    without installing Python, grab the standalone package
+    (EpisodeSleuth-<version>-windows-x64.zip, built by package_windows.ps1),
+    unzip it, and run Install-EpisodeSleuth.bat - or double-click
+    EpisodeSleuth.exe directly. This install.ps1 is for developers and for
+    people who prefer running from source with their own Python.
 
 .DESCRIPTION
     Installs everything the app needs and creates a Start-menu / Desktop

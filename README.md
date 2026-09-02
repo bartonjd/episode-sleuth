@@ -403,6 +403,29 @@ build is roughly ~400 MB (mostly Qt + Vosk); `ffmpeg` is still needed at run
 time and is not bundled. Full details in
 **[BUILD_EXECUTABLES.md](BUILD_EXECUTABLES.md)**.
 
+### Package it for distribution (.tar.gz / .zip)
+
+To hand someone a single downloadable file with a tidy installer, use the
+packaging wrappers - they build the binary if needed and wrap it up:
+
+```bash
+# Linux -> dist/EpisodeSleuth-<version>-linux-x64.tar.gz (+ .deb if dpkg-deb present)
+./package_linux.sh
+```
+
+```powershell
+# Windows -> dist\EpisodeSleuth-<version>-windows-x64.zip
+powershell -ExecutionPolicy Bypass -File .\package_windows.ps1
+```
+
+The Linux archive ships an `install.sh` (user or system-wide, adds an
+`episodesleuth` command and an app-menu entry) plus an optional `.deb`; the
+Windows zip ships `Install-EpisodeSleuth.bat` (Desktop + Start-menu shortcuts)
+or you can just double-click `EpisodeSleuth.exe`. End-user steps are in
+**[INSTALL_LINUX.md](INSTALL_LINUX.md)** and
+**[INSTALL_WINDOWS.md](INSTALL_WINDOWS.md)**; packaging and code-signing notes
+are in **[BUILD_EXECUTABLES.md](BUILD_EXECUTABLES.md)**.
+
 ### Build a standalone MSIX installer (Windows)
 
 To produce a self-contained `.msix` that installs the app **without needing
