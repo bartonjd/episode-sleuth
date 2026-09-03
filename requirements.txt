@@ -1,9 +1,10 @@
 # =====================================================================
 # Building the reference database (create_fingerprint.py)
 # =====================================================================
-# Core phonetic fingerprinting
+# Core phonetic fingerprinting.
+# (Fuzzy matching uses the stdlib difflib + a custom phonetic LCS scorer,
+# so no external edit-distance library is required.)
 metaphone>=0.6
-python-Levenshtein>=0.21
 
 # Subtitle parsing
 pysrt>=1.1.2

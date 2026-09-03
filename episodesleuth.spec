@@ -118,7 +118,8 @@ block_cipher = None
 # Heavy scientific / ML / cloud packages that may live in the build environment
 # but are NOT used by EpisodeSleuth. Excluding them keeps the bundle small
 # (~1.7 GB down to a few hundred MB). The app only needs PySide6,
-# qfluentwidgets, vosk, numpy, metaphone and Levenshtein.
+# qfluentwidgets, vosk and metaphone (numpy is pulled in transitively by
+# qfluentwidgets; no external edit-distance library is used).
 EXCLUDES = [
     "torch", "torchaudio", "torchvision",
     "tensorflow", "keras",
