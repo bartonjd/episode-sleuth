@@ -14,9 +14,9 @@ from qfluentwidgets import (
     TitleLabel, CaptionLabel,
 )
 
-from audio_fingerprint.gui.constants import HERE, DEFAULT_DB
-from audio_fingerprint.gui.widgets import Card, _path_row
-from audio_fingerprint.gui.workers import BuildWorker
+from ..constants import HERE, DEFAULT_DB
+from ..widgets import Card, _path_row
+from ..workers import BuildWorker
 
 
 class BuildInterface(QWidget):

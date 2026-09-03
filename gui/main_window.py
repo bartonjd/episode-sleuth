@@ -26,15 +26,15 @@ from qfluentwidgets import (
 
 from gui_config import GuiConfig
 
-from audio_fingerprint.gui.constants import (
+from .constants import (
     APP_TITLE, DEFAULT_DB, DEFAULT_CONFIG, HERE,
     COLOR_OK, COLOR_MEDIUM, COLOR_REVIEW,
 )
-from audio_fingerprint.gui.logging_bridge import LogBridge, QtLogHandler
-from audio_fingerprint.gui.pages.identify import IdentifyInterface
-from audio_fingerprint.gui.pages.build import BuildInterface
-from audio_fingerprint.gui.pages.settings import SettingsInterface
-from audio_fingerprint.gui.pages.log import LogInterface
+from .logging_bridge import LogBridge, QtLogHandler
+from .pages.identify import IdentifyInterface
+from .pages.build import BuildInterface
+from .pages.settings import SettingsInterface
+from .pages.log import LogInterface
 
 
 class MainWindow(FluentWindow):

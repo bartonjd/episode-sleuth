@@ -33,11 +33,11 @@ try:
 except Exception:  # pragma: no cover - only if deps are missing
     stt_utils = None
 
-from audio_fingerprint.gui.constants import (
+from ..constants import (
     HERE, COLOR_OK, COLOR_MEDIUM, COLOR_REVIEW,
 )
-from audio_fingerprint.gui.widgets import Card, _path_row
-from audio_fingerprint.gui.workers import IdentifyWorker
+from ..widgets import Card, _path_row
+from ..workers import IdentifyWorker
 
 
 class IdentifyInterface(QWidget):

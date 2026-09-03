@@ -86,6 +86,11 @@ except Exception:
 
 # Make sure our own (flat-layout) modules and their submodules are pulled in.
 hiddenimports += collect_submodules("metaphone")
+# The GUI ships as a flat top-level ``gui`` package (imported by relative name),
+# so collect it directly. ``audio_fingerprint`` is only a resolvable package name
+# when the project is pip-installed; collecting it here is a harmless no-op for
+# the flat/source layout but keeps installed usage working too.
+hiddenimports += collect_submodules("gui")
 hiddenimports += collect_submodules("audio_fingerprint")
 hiddenimports += collect_submodules("engine")
 

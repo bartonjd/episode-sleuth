@@ -14,7 +14,7 @@ dvd_identifier_fluent.py module; the layout is now:
       pages/            Identify / Build / Settings / Log interface pages
 
 Run it with:
-    python -m audio_fingerprint.gui
+    python -m gui
 or via the ``dvd-gui`` console entry point.
 """
 from __future__ import annotations
@@ -29,6 +29,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from audio_fingerprint.gui.main_window import main
+from .main_window import main
 
 __all__ = ["main"]

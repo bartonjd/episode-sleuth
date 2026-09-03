@@ -17,9 +17,9 @@ from qfluentwidgets import (
     StrongBodyLabel, MessageBox,
 )
 
-from audio_fingerprint.gui.constants import DEFAULT_DB
-from audio_fingerprint.gui.widgets import Card, _path_row
-from audio_fingerprint.gui.workers import ModelDownloadWorker
+from ..constants import DEFAULT_DB
+from ..widgets import Card, _path_row
+from ..workers import ModelDownloadWorker
 
 # Speech-to-text helpers, imported defensively (the page degrades gracefully if
 # the optional pydub/vosk dependencies are missing).
