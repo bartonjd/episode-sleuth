@@ -30,8 +30,16 @@ if ! command -v "$PY" >/dev/null 2>&1; then
     exit 1
 fi
 
-info "Creating build virtual environment (.buildvenv) ..."
+# Validate the venv, not just the folder: a .buildvenv copied from another OS
+# (e.g. a Windows venv shipped inside a zip) has a Scripts/ layout and a
+# pyvenv.cfg whose "home" points at a non-existent interpreter path, which
+# breaks PyInstaller. Recreate whenever the Linux launcher is missing/unusable.
+if [ -d "$BUILD_VENV" ] && ! "$BUILD_VENV/bin/python" --version >/dev/null 2>&1; then
+    info "Existing .buildvenv is not a valid Linux venv - removing and recreating ..."
+    rm -rf "$BUILD_VENV"
+fi
 if [ ! -d "$BUILD_VENV" ]; then
+    info "Creating build virtual environment (.buildvenv) ..."
     "$PY" -m venv "$BUILD_VENV"
 fi
 # shellcheck disable=SC1091

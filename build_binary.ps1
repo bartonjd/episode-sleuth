@@ -60,12 +60,28 @@ foreach ($cand in @("python", "py")) {
 if (-not $python) { throw "Python 3 not found on PATH. Install it (winget install Python.Python.3.12) and retry." }
 
 # --- throwaway build venv ----------------------------------------------------
+# Validate the venv, not just the folder: a .buildvenv copied from another OS
+# (e.g. a Linux venv shipped inside a zip) has a bin/ layout and a pyvenv.cfg
+# whose "home" points at a non-existent interpreter path. PyInstaller would
+# then try to load that path (e.g. /opt/.../bin\python.exe) and fail. So we
+# recreate the venv whenever the Windows launcher is missing or unusable.
 $buildVenv = Join-Path $ProjectDir ".buildvenv"
+$bpy = Join-Path $buildVenv "Scripts\python.exe"
+
+$venvOk = $false
+if (Test-Path $bpy) {
+    try { if ((& $bpy --version 2>&1) -match "Python 3") { $venvOk = $true } } catch { }
+}
+if ((Test-Path $buildVenv) -and (-not $venvOk)) {
+    Info "Existing .buildvenv is not a valid Windows venv - removing and recreating ..."
+    Remove-Item -Recurse -Force $buildVenv
+}
 if (-not (Test-Path $buildVenv)) {
     Info "Creating build virtual environment (.buildvenv) ..."
     & $python -m venv $buildVenv
 }
 $bpy = Join-Path $buildVenv "Scripts\python.exe"
+if (-not (Test-Path $bpy)) { throw "Failed to create a usable build venv at $buildVenv" }
 
 Info "Installing PyInstaller + runtime dependencies ..."
 & $bpy -m pip install --upgrade pip | Out-Host
