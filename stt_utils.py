@@ -22,10 +22,37 @@ import tempfile
 import urllib.request
 from typing import Optional, List, Tuple, Callable
 
-from pydub import AudioSegment
-import pydub.utils
+# pydub is only needed for AUDIO TRANSCRIPTION (it normalises audio via
+# ffmpeg and depends on the C ``audioop`` module). It is deliberately imported
+# defensively so the rest of this module - crucially download_vosk_model(),
+# which only needs urllib + zipfile - keeps working even when pydub cannot be
+# imported. On Python 3.13 ``audioop`` was removed from the stdlib (PEP 594)
+# and is provided by the ``audioop-lts`` wheel; if that native extension is
+# missing (e.g. not bundled into a frozen build) pydub raises at import time.
+# Guarding it here means the Vosk model download and the GUI still function,
+# and only actual transcription surfaces a clear, actionable error.
+try:
+    from pydub import AudioSegment
+    import pydub.utils
+    _PYDUB_IMPORT_ERROR = None
+except Exception as _exc:  # pragma: no cover - depends on runtime environment
+    AudioSegment = None
+    pydub = None
+    _PYDUB_IMPORT_ERROR = _exc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _require_pydub():
+    """Raise a clear error if pydub (audio transcription support) is missing."""
+    if AudioSegment is None:
+        raise RuntimeError(
+            "Audio transcription requires the 'pydub' package and its "
+            "'audioop' dependency, which failed to load "
+            f"({_PYDUB_IMPORT_ERROR}). On Python 3.13+ install 'audioop-lts', "
+            "and ensure ffmpeg is on PATH. Note: downloading the Vosk model "
+            "does not require pydub and works without it."
+        )
 
 # Known Vosk English models keyed by a friendly "size" (see constants.py). The
 # small model is the default (fast, ~40 MB); the large model is far more
@@ -40,7 +67,8 @@ from constants import VOSK_MODELS, DEFAULT_MODELS_DIR  # noqa: E402
 # pydub.utils as ``Popen``). On Windows each of those spawns a flashing console
 # window. Wrap pydub.utils.Popen so it always passes CREATE_NO_WINDOW. This is a
 # no-op on non-Windows platforms and is applied only once.
-if os.name == "nt" and not getattr(pydub.utils, "_no_window_patched", False):
+if (pydub is not None and os.name == "nt"
+        and not getattr(pydub.utils, "_no_window_patched", False)):
     _CREATE_NO_WINDOW = 0x08000000
     _orig_popen = pydub.utils.Popen
 
@@ -53,14 +81,15 @@ if os.name == "nt" and not getattr(pydub.utils, "_no_window_patched", False):
     pydub.utils._no_window_patched = True
 
 
-def load_audio_mono16k(path: str, sample_rate: int = 16000) -> AudioSegment:
+def load_audio_mono16k(path: str, sample_rate: int = 16000) -> "AudioSegment":
     """Load any audio file and convert to mono / target sample-rate / 16-bit."""
+    _require_pydub()
     seg = AudioSegment.from_file(path)
     seg = seg.set_channels(1).set_frame_rate(sample_rate).set_sample_width(2)
     return seg
 
 
-def segment_to_wav_bytes(seg: AudioSegment) -> bytes:
+def segment_to_wav_bytes(seg: "AudioSegment") -> bytes:
     import io
     buf = io.BytesIO()
     seg.export(buf, format="wav")
@@ -85,7 +114,7 @@ class VoskTranscriber:
         self.model = Model(model_path)
         self.KaldiRecognizer = KaldiRecognizer
 
-    def transcribe_segment(self, seg: AudioSegment) -> str:
+    def transcribe_segment(self, seg: "AudioSegment") -> str:
         """Transcribe a full pydub AudioSegment to text."""
         seg = seg.set_channels(1).set_frame_rate(self.sample_rate).set_sample_width(2)
         rec = self.KaldiRecognizer(self.model, self.sample_rate)
@@ -116,7 +145,7 @@ class GoogleTranscriber:
         self.recognizer = sr.Recognizer()
         self.language = language
 
-    def transcribe_segment(self, seg: AudioSegment) -> str:
+    def transcribe_segment(self, seg: "AudioSegment") -> str:
         import io
         seg = seg.set_channels(1).set_frame_rate(16000).set_sample_width(2)
         wav_bytes = segment_to_wav_bytes(seg)

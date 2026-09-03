@@ -50,7 +50,8 @@ binaries = []
 hiddenimports = []
 
 # Fully collect the heavy third-party packages (data files + submodules).
-for pkg in ("vosk", "qfluentwidgets"):
+# pydub is included here so its whole package (and metadata) is bundled.
+for pkg in ("vosk", "qfluentwidgets", "pydub"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -59,6 +60,29 @@ for pkg in ("vosk", "qfluentwidgets"):
     except Exception:
         # If a package is missing at build time, let Analysis surface it later.
         pass
+
+# The C ``audioop`` module was removed from the stdlib in Python 3.13 (PEP 594)
+# and is now shipped by the 'audioop-lts' wheel as a compiled extension named
+# ``audioop`` (plus a pure-Python ``pyaudioop`` fallback). pydub imports it at
+# module load time, so a frozen build MUST include it or transcription breaks
+# with "No module named 'audioop'". PyInstaller does not detect it via pydub's
+# lazy import, so pull in its module + dynamic library explicitly.
+for _audioop_mod in ("audioop", "pyaudioop"):
+    hiddenimports.append(_audioop_mod)
+# audioop-lts ships ``audioop`` as a SINGLE top-level extension module (not a
+# package), so collect_dynamic_libs may skip it. Locate the compiled file
+# directly via importlib and add it as a binary so it is always bundled. This
+# runs on the build machine's interpreter (Python 3.13 for end users), where
+# audioop resolves to the audioop-lts .pyd/.so. On Python < 3.13 audioop is a
+# stdlib extension that PyInstaller already bundles, so this is a harmless no-op.
+try:
+    import importlib.util as _ilu
+    _spec = _ilu.find_spec("audioop")
+    if _spec and _spec.origin and _spec.origin not in ("built-in", "frozen"):
+        if _spec.origin.endswith((".pyd", ".so", ".dylib")):
+            binaries.append((_spec.origin, "."))
+except Exception:
+    pass
 
 # Make sure our own (flat-layout) modules and their submodules are pulled in.
 hiddenimports += collect_submodules("metaphone")
