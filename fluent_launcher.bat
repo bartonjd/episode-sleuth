@@ -1,6 +1,6 @@
 @echo off
 REM =====================================================================
-REM  DVD Episode Identifier - Fluent GUI launcher (Windows 11)
+REM  EpisodeSleuth - Fluent GUI launcher (Windows 11)
 REM  Double-click this file to open the modern Fluent Design app.
 REM =====================================================================
 REM The GUI now lives in the audio_fingerprint.gui package, so we launch it

@@ -92,9 +92,14 @@ Ok "Build dependencies installed."
 Info "Cleaning previous build output ..."
 if (Test-Path (Join-Path $ProjectDir "build")) { Remove-Item -Recurse -Force (Join-Path $ProjectDir "build") }
 if (Test-Path (Join-Path $ProjectDir "dist"))  { Remove-Item -Recurse -Force (Join-Path $ProjectDir "dist") }
+# Purge stale __pycache__ so a rebuild can never pick up old bytecode (e.g. an
+# outdated APP_TITLE). This guarantees the exe reflects the current source.
+Get-ChildItem -Path $ProjectDir -Recurse -Directory -Filter "__pycache__" `
+    -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 Info "Running PyInstaller (this can take a few minutes) ..."
-& $bpy -m PyInstaller (Join-Path $ProjectDir "episodesleuth.spec") --noconfirm | Out-Host
+# --clean discards PyInstaller's own cached analysis/bytecode as an extra guard.
+& $bpy -m PyInstaller (Join-Path $ProjectDir "episodesleuth.spec") --noconfirm --clean | Out-Host
 
 if ($OneFile) {
     $target = Join-Path $ProjectDir "dist\EpisodeSleuth.exe"

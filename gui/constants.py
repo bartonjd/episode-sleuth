@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared constants for the DVD Episode Identifier GUI package.
+"""Shared constants for the EpisodeSleuth GUI package.
 
 Kept in one small module so both the pages and the workers can import them
 without creating an import cycle with main_window.

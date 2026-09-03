@@ -53,9 +53,13 @@ ok "Build dependencies installed."
 
 info "Cleaning previous build output ..."
 rm -rf "$PROJECT_DIR/build" "$PROJECT_DIR/dist"
+# Purge stale __pycache__ so a rebuild can never pick up old bytecode (e.g. an
+# outdated APP_TITLE). Guarantees the binary reflects the current source.
+find "$PROJECT_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
 
 info "Running PyInstaller (this can take a few minutes) ..."
-python -m PyInstaller "$PROJECT_DIR/episodesleuth.spec" --noconfirm
+# --clean discards PyInstaller's own cached analysis/bytecode as an extra guard.
+python -m PyInstaller "$PROJECT_DIR/episodesleuth.spec" --noconfirm --clean
 
 deactivate
 

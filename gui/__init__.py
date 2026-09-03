@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GUI package for the DVD Episode Identifier.
+"""GUI package for EpisodeSleuth.
 
 A modern, Windows 11 "Fluent Design" desktop front end built with PySide6 and
 PySide6-Fluent-Widgets. This package was split out of the former monolithic

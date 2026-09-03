@@ -13,6 +13,7 @@ Audio is normalised to 16 kHz mono 16-bit PCM via pydub/ffmpeg before STT.
 """
 
 import os
+import sys
 import json
 import wave
 import shutil
@@ -160,19 +161,92 @@ class GoogleTranscriber:
             return ""
 
 
+# ---------------------------------------------------------------------------
+# Where Vosk models live (must be a WRITABLE, PERSISTENT location)
+# ---------------------------------------------------------------------------
+# CRITICAL for frozen (PyInstaller) builds: never store models in a path
+# derived from ``__file__``. In a --onefile build, ``__file__`` resolves inside
+# ``sys._MEIPASS`` - a temporary directory that PyInstaller extracts on launch
+# and DELETES on exit - so any downloaded model vanishes when the app closes
+# (symptom: "download succeeds" but the model is "Not downloaded" on restart,
+# and no models/ folder is ever visible). In a --onedir build ``__file__`` sits
+# in the install directory, which is typically read-only (e.g. Program Files).
+#
+# So: when frozen, download/read models from a per-user application-data folder
+# that persists across restarts and is always writable. When running from
+# source we keep the project-local ``models/`` directory for backward
+# compatibility with existing installs.
+
+def _user_data_dir() -> str:
+    """Per-user, per-OS application data directory for EpisodeSleuth."""
+    app = "EpisodeSleuth"
+    if sys.platform == "win32":
+        root = os.environ.get("LOCALAPPDATA") or os.path.expanduser(
+            r"~\AppData\Local")
+    elif sys.platform == "darwin":
+        root = os.path.expanduser("~/Library/Application Support")
+    else:
+        root = os.environ.get("XDG_DATA_HOME") or os.path.expanduser(
+            "~/.local/share")
+    return os.path.join(root, app)
+
+
+def default_models_base() -> str:
+    """Return the writable base directory where Vosk models are stored.
+
+    Frozen build -> per-user data dir (persistent + writable).
+    Source run   -> ``<project>/models`` (unchanged, backward compatible).
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.join(_user_data_dir(), DEFAULT_MODELS_DIR)
+    return os.path.join(HERE, DEFAULT_MODELS_DIR)
+
+
+def _model_search_bases() -> List[str]:
+    """All base dirs to search when checking whether a model is present.
+
+    Includes the writable default plus any read-only locations a model might
+    have been shipped in (next to the exe, or bundled into the onefile temp
+    dir), so a pre-installed model is still found.
+    """
+    bases: List[str] = [default_models_base()]
+    try:
+        if getattr(sys, "frozen", False):
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            bases.append(os.path.join(exe_dir, DEFAULT_MODELS_DIR))
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                bases.append(os.path.join(meipass, DEFAULT_MODELS_DIR))
+        # Always also consider the source-relative dir (harmless if absent).
+        bases.append(os.path.join(HERE, DEFAULT_MODELS_DIR))
+    except Exception:
+        pass
+    seen, out = set(), []
+    for b in bases:
+        if b not in seen:
+            seen.add(b)
+            out.append(b)
+    return out
+
+
 def get_model_path(model_size: str = "small", models_dir: Optional[str] = None
                    ) -> Optional[str]:
     """Return the local path to the Vosk model for ``model_size`` if present.
 
-    ``model_size`` is "small" or "large". Looks under ``models_dir`` (default
-    ``<project>/models``). Returns the directory path if the model exists on
-    disk, else ``None`` (call :func:`download_vosk_model` to fetch it).
+    ``model_size`` is "small" or "large". When ``models_dir`` is given, only
+    that directory is checked; otherwise every persistent/bundled model
+    location is searched (see :func:`_model_search_bases`). Returns the
+    directory path if the model exists on disk, else ``None`` (call
+    :func:`download_vosk_model` to fetch it).
     """
     size = (model_size or "small").lower()
     spec = VOSK_MODELS.get(size, VOSK_MODELS["small"])
-    base = models_dir or os.path.join(HERE, DEFAULT_MODELS_DIR)
-    path = os.path.join(base, spec["dir"])
-    return path if os.path.isdir(path) else None
+    bases = [models_dir] if models_dir else _model_search_bases()
+    for base in bases:
+        path = os.path.join(base, spec["dir"])
+        if os.path.isdir(path):
+            return path
+    return None
 
 
 class ModelDownloadError(Exception):
@@ -207,7 +281,7 @@ def download_vosk_model(model_size: str = "large",
     if spec is None:
         raise ValueError(f"Unknown Vosk model size: {model_size!r} "
                          f"(known: {', '.join(VOSK_MODELS)})")
-    base = models_dir or os.path.join(HERE, DEFAULT_MODELS_DIR)
+    base = models_dir or default_models_base()
     os.makedirs(base, exist_ok=True)
     dest = os.path.join(base, spec["dir"])
     if os.path.isdir(dest) and not force:
