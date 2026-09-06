@@ -114,13 +114,18 @@ def sample_windows(duration: float, points: List[float],
 # Transcription of the sampled windows
 # ---------------------------------------------------------------------------
 def transcribe_samples(path: str, windows: List[Tuple[float, float]],
-                       transcriber, sample_rate: int
+                       transcriber, sample_rate: int,
+                       cancel_check=None
                        ) -> Tuple[List[Tuple[float, str]], int]:
     """Extract each sample window with ffmpeg and transcribe it.
 
     Returns ``(per_window, got)`` where ``per_window`` is a list of
     ``(start_s, text)`` for every window that produced speech (start time kept so
     the caller can time-weight each sample), and ``got`` is that count.
+
+    ``cancel_check`` is an optional zero-arg callable; when it returns True the
+    loop stops early (between windows) so a user Cancel takes effect within one
+    sample instead of running the whole file to completion.
     """
     import stt_utils
 
@@ -129,6 +134,8 @@ def transcribe_samples(path: str, windows: List[Tuple[float, float]],
     tmpdir = tempfile.mkdtemp(prefix="dvdid_")
     try:
         for i, (start_s, length_s) in enumerate(windows):
+            if cancel_check is not None and cancel_check():
+                break
             wav = os.path.join(tmpdir, f"s{i}.wav")
             if not _ffmpeg_extract(path, start_s, length_s, wav, sample_rate):
                 logging.debug("  sample %d extract failed @%.1fs", i, start_s)
@@ -158,10 +165,15 @@ def transcribe_samples(path: str, windows: List[Tuple[float, float]],
 # ---------------------------------------------------------------------------
 def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                  cfg: dict, args, transcriber,
-                 runtimes: Optional[dict]) -> FileResult:
+                 runtimes: Optional[dict], cancel_check=None) -> FileResult:
     """Identify a single file by dialogue. Opens its own DB connection so it is
     safe to run in a worker thread; the ``transcriber`` is shared (each
-    transcription builds its own recogniser internally)."""
+    transcription builds its own recogniser internally).
+
+    ``cancel_check`` is an optional zero-arg callable; when it returns True the
+    per-file work bails out early (checked between transcription windows) so a
+    user Cancel is honoured promptly instead of running the file to completion.
+    """
     fname = os.path.basename(path)
     t0 = time.time()
     _log(f"\n>>> {fname}")
@@ -173,6 +185,8 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
 
         sr = cfg.get("audio", {}).get("sample_rate", 16000)
         best: Optional[EpisodeGuess] = None
+        best_match_count = 0
+        runner_up_margin: Optional[float] = None  # gap to the 2nd-best candidate
         notes_parts: List[str] = []
         boosted = False
 
@@ -192,7 +206,17 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
             notes_parts.append("STT engine unavailable")
             per_window, got = [], 0
         else:
-            per_window, got = transcribe_samples(path, windows, transcriber, sr)
+            per_window, got = transcribe_samples(
+                path, windows, transcriber, sr, cancel_check=cancel_check)
+
+        # If the user cancelled mid-file, return a lightweight placeholder rather
+        # than a misleading "no match" verdict; the caller discards it.
+        if cancel_check is not None and cancel_check():
+            return FileResult(
+                filename=fname, path=path, duration_s=duration, guess=None,
+                needs_review=True, notes="cancelled",
+                elapsed_s=time.time() - t0,
+                name_status="unknown", suggested_filename="")
 
         text = " ".join(t for _s, t in per_window).strip()
         if text:
@@ -221,6 +245,10 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                     episode_title=(getattr(m, "episode_title", None) or ""),
                 )
                 best_match_count = results[0].match_count
+                # Ambiguity signal: how far ahead is the winner of the runner-up?
+                # (computed on the same, post-boost, sorted list)
+                if len(results) >= 2:
+                    runner_up_margin = results[0].confidence - results[1].confidence
             else:
                 # Stage 2: order-preserving fuzzy fallback (tolerates STT errors)
                 fuzzy_results, _fc = run_fuzzy_stage(text, db, fp_cfg, cfg, [])
@@ -257,6 +285,17 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
             if best.mean_confidence < eff_review:
                 needs_review = True
                 notes_parts.append(f"low confidence {best.mean_confidence:.0%}")
+
+            # Ambiguity gate: if a second episode scores almost as high, the
+            # verdict is a near-tie and not trustworthy - flag for review rather
+            # than silently asserting the winner. Only trips when the winner is
+            # not already overwhelmingly strong.
+            min_margin = cfg.get("matching", {}).get("min_exact_margin", 0.06)
+            if (runner_up_margin is not None and runner_up_margin < min_margin
+                    and best.mean_confidence < 0.90):
+                needs_review = True
+                notes_parts.append(
+                    f"ambiguous: runner-up within {runner_up_margin:.0%}")
 
         # Optional runtime sanity check
         if best is not None and runtimes:

@@ -105,7 +105,8 @@ class IdentifyWorker(QThread):
             def _work(path):
                 # Each call opens its own DB connection (thread-safe).
                 return identify_one(path, self.db_path, fp_cfg, cfg, args,
-                                    transcriber, None)
+                                    transcriber, None,
+                                    cancel_check=lambda: self._cancel)
 
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futs = {}

@@ -449,6 +449,12 @@ class SettingsInterface(QWidget):
             self.model_cancel_btn.setEnabled(True)
             self.save_btn.setEnabled(False)
             self.model_status.setText("Downloading model...")
+            # Ensure progress widgets stay visible throughout the download
+            # (they are created by _start_model_download but could be hidden
+            # if _refresh_model_ui is triggered from elsewhere, e.g. the
+            # model combo change signal).
+            self.model_progress.setVisible(True)
+            self.model_progress_label.setVisible(True)
             return
 
         # Not downloading: normal state.
@@ -521,6 +527,13 @@ class SettingsInterface(QWidget):
         # "Downloading vosk-model-small-en-us-0.15... 45%".
         self._dl_model_name = self._model_dirname(size)
 
+        # Start the thread BEFORE refreshing the UI so _downloading() returns
+        # True and _refresh_model_ui keeps the progress widgets visible instead
+        # of immediately hiding them (the prior ordering created the worker,
+        # showed the bar, then _refresh_model_ui hid it because isRunning was
+        # still False).
+        self._dl_worker.start()
+
         self.model_progress.setVisible(True)
         self.model_progress.setRange(0, 100)
         self.model_progress.setValue(0)
@@ -528,10 +541,7 @@ class SettingsInterface(QWidget):
         self.model_progress_label.setText(
             f"Downloading {self._dl_model_name}... 0%")
 
-        # No disappearing InfoBar - the persistent progress bar + label below the
-        # controls is the single, always-visible source of download status.
         self._refresh_model_ui()
-        self._dl_worker.start()
 
     def _on_dl_progress(self, done: int, total: int):
         mb = 1024 * 1024
@@ -553,20 +563,36 @@ class SettingsInterface(QWidget):
         self.model_progress.setValue(100)
         # Persistent success message in the status label (no InfoBar).
         self.model_status.setText(f"{name} installed - ready to use.")
+        self._dl_outcome = "ok"
 
     def _on_dl_failed(self, msg: str):
         # Show the failure persistently in the label instead of a fading InfoBar.
         self.model_progress_label.setText(f"Download failed: {msg}")
+        self._dl_outcome = "failed"
 
     def _on_dl_thread_done(self):
         # Runs whether the download succeeded, failed, or was cancelled.
         cancelled = self._dl_worker is not None and getattr(
             self._dl_worker, "_cancel", False)
+        outcome = getattr(self, "_dl_outcome", None)
+        self._dl_outcome = None
         self._dl_worker = None
         self._refresh_model_ui()
+        # _refresh_model_ui hides progress widgets; re-show them so the user
+        # can see the final result instead of the bar vanishing instantly.
         if cancelled:
             self.model_progress_label.setVisible(True)
             self.model_progress_label.setText("Download cancelled.")
+        elif outcome == "ok":
+            self.model_progress.setVisible(True)
+            self.model_progress.setValue(100)
+            self.model_progress_label.setVisible(True)
+            name = getattr(self, "_dl_model_name", "Vosk model")
+            self.model_progress_label.setText(
+                f"{name} downloaded successfully.")
+        elif outcome == "failed":
+            self.model_progress_label.setVisible(True)
+            # Text was already set by _on_dl_failed; just keep it visible.
 
     def _save(self, from_leave: bool = False) -> bool:
         """Persist settings. Returns True on success, False if blocked.
