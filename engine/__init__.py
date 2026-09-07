@@ -37,6 +37,7 @@ from .types import (
 )
 from .discovery import (
     discover_media, episode_id_str, build_suggested_filename, sanitize_filename,
+    parse_media_exts, normalize_part_markers, titles_equivalent,
 )
 from .scoring import score_matches, run_fuzzy_stage, apply_metadata_boosts
 from .matcher import identify_one, transcribe_samples, sample_windows
@@ -48,7 +49,8 @@ __all__ = [
     "MEDIA_EXTS", "VIDEO_EXTS", "AUDIO_EXTS", "DEFAULT_SAMPLE_POINTS",
     # discovery
     "discover_media", "episode_id_str", "build_suggested_filename",
-    "sanitize_filename",
+    "sanitize_filename", "parse_media_exts", "normalize_part_markers",
+    "titles_equivalent",
     # scoring
     "score_matches", "run_fuzzy_stage", "apply_metadata_boosts",
     # matcher

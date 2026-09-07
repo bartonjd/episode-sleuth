@@ -75,7 +75,11 @@ class IdentifyWorker(QThread):
             )
 
             if os.path.isdir(self.source):
-                media = discover_media(self.source)
+                # Prefer the extension list chosen in Settings; fall back to the
+                # engine config.json default when the GUI has not set one.
+                media_exts = getattr(self.params, "media_extensions", None) \
+                    or cfg.get("identify", {}).get("media_extensions")
+                media = discover_media(self.source, media_exts)
             else:
                 media = [self.source]
             if not media:

@@ -7,6 +7,42 @@ Windows this produces an `.exe`; on Linux/macOS it produces a native binary
 single cross-platform build spec, `episodesleuth.spec`, driven by a small
 wrapper script per OS.
 
+## Unified build commands (recommended)
+
+Every common task is wrapped behind a single, self-documenting front-door so
+you do not have to remember individual script names. Run it with no arguments
+to see every target.
+
+**Linux / macOS** (via `make`):
+
+```bash
+make            # or: make help  - list all targets
+make build      # standalone one-folder binary  -> dist/EpisodeSleuth/
+make package    # Linux release archives (.tar.gz + .deb)
+make test       # run the test suite
+make clean      # remove build/dist/cache artifacts (keeps sources + models)
+make clean-deep # also remove the throwaway .buildvenv
+make dist       # clean, then build and package from scratch
+```
+
+**Windows** (via `make.ps1`, same verbs):
+
+```powershell
+pwsh make.ps1            # list all targets
+pwsh make.ps1 build      # standalone one-folder .exe -> dist\EpisodeSleuth\
+pwsh make.ps1 package    # Windows release zip
+pwsh make.ps1 msix       # signed MSIX installer (Microsoft Store)
+pwsh make.ps1 clean      # remove build/dist/cache artifacts
+pwsh make.ps1 test       # run the test suite
+```
+
+These wrappers simply call the per-OS scripts documented below, so you can
+still invoke those directly if you prefer. The `clean` target is also available
+as a standalone script (`./clean.sh` or `clean.ps1`); pass `--dry-run`
+(`-DryRun` on Windows) to preview what would be removed.
+
+---
+
 There are three ways to ship the app, from simplest to most polished:
 
 | Method | Best for | Script |

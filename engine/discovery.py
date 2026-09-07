@@ -25,6 +25,86 @@ except Exception:  # pragma: no cover
     clean_subtitle_filename = None     # type: ignore[assignment]
 
 
+def parse_media_exts(spec) -> set:
+    """Turn a user-supplied extension list into a normalised set.
+
+    Accepts a comma/space/semicolon separated string (e.g.
+    ``"mp4, mkv;avi"`` or ``".MP4 .mkv"``) or an iterable of extensions.
+    Returns a set of lower-case, dot-prefixed extensions
+    (e.g. ``{".mp4", ".mkv", ".avi"}``). Falls back to the built-in
+    ``MEDIA_EXTS`` when nothing usable is provided.
+    """
+    if not spec:
+        return set(MEDIA_EXTS)
+    if isinstance(spec, str):
+        tokens = re.split(r"[,\s;]+", spec)
+    else:
+        tokens = list(spec)
+    exts = set()
+    for tok in tokens:
+        tok = (tok or "").strip().lower()
+        if not tok:
+            continue
+        if not tok.startswith("."):
+            tok = "." + tok
+        exts.add(tok)
+    return exts or set(MEDIA_EXTS)
+
+
+# Multi-part markers we treat as equivalent, e.g. "Part 1" == "(1)" == "Part I".
+_ROMAN = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6,
+          "vii": 7, "viii": 8, "ix": 9, "x": 10}
+_PART_RE = re.compile(
+    r"""[\s\-_]*                     # leading separators
+        \(?                          # optional opening paren
+        (?:part|pt\.?|p)?\s*         # optional 'part'/'pt'/'p'
+        (\d{1,2}|[ivx]{1,4})         # the part number (arabic or roman)
+        \)?                          # optional closing paren
+        \s*$                         # anchored to the end
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def normalize_part_markers(title: Optional[str]) -> str:
+    """Collapse any trailing multi-part marker to a canonical ``part N``.
+
+    ``"The Prisoner (1)"``, ``"The Prisoner Part 1"``, ``"The Prisoner - Part I"``
+    and ``"The Prisoner (Part 1)"`` all normalise to ``"the prisoner part 1"``.
+    Titles without a part marker are returned lower-cased and stripped.
+    """
+    if not title:
+        return ""
+    s = str(title).strip()
+    m = _PART_RE.search(s)
+    if m:
+        tok = m.group(1).lower()
+        num = _ROMAN.get(tok, None)
+        if num is None:
+            try:
+                num = int(tok)
+            except ValueError:
+                num = tok
+        base = s[:m.start()].strip(" -_")
+        return f"{base} part {num}".strip().lower()
+    return s.strip().lower()
+
+
+def titles_equivalent(a: Optional[str], b: Optional[str],
+                      ignore_part_format: bool = True) -> bool:
+    """True when two episode titles refer to the same episode.
+
+    When *ignore_part_format* is set (default), differing multi-part
+    punctuation ("Part 1" vs "(1)") does not count as a difference.
+    """
+    na, nb = (a or "").strip().lower(), (b or "").strip().lower()
+    if na == nb:
+        return True
+    if ignore_part_format:
+        return normalize_part_markers(a) == normalize_part_markers(b)
+    return False
+
+
 def episode_id_str(season: Optional[int], episode: Optional[int]) -> str:
     if season is not None and episode is not None:
         return f"S{season:02d}E{episode:02d}"
@@ -62,10 +142,17 @@ def build_suggested_filename(show: str, season: Optional[int],
     return sanitize_filename(stem) + (ext or "")
 
 
-def discover_media(path_dir: str) -> List[str]:
+def discover_media(path_dir: str, media_exts=None) -> List[str]:
+    """List media files in *path_dir* whose extension is allowed.
+
+    *media_exts* may be a set/iterable of extensions or a comma-separated
+    string (see :func:`parse_media_exts`). Defaults to the built-in
+    ``MEDIA_EXTS`` when not supplied.
+    """
+    exts = parse_media_exts(media_exts) if media_exts else set(MEDIA_EXTS)
     files = []
     for name in sorted(os.listdir(path_dir)):
         full = os.path.join(path_dir, name)
-        if os.path.isfile(full) and os.path.splitext(name)[1].lower() in MEDIA_EXTS:
+        if os.path.isfile(full) and os.path.splitext(name)[1].lower() in exts:
             files.append(full)
     return files

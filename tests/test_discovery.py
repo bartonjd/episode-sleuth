@@ -4,6 +4,7 @@ import os
 
 from engine.discovery import (
     discover_media, episode_id_str, sanitize_filename, build_suggested_filename,
+    parse_media_exts, normalize_part_markers, titles_equivalent,
 )
 from subtitle_utils import parse_episode_info, clean_subtitle_filename
 
@@ -26,6 +27,64 @@ def test_discover_media_finds_files(tmp_path):
 
 def test_discover_media_empty_dir(tmp_path):
     assert discover_media(str(tmp_path)) == []
+
+
+def test_discover_media_custom_extension_filter(tmp_path):
+    """A custom extension list restricts discovery to just those types."""
+    for name in ["a.mkv", "b.mp4", "c.avi", "d.mov"]:
+        (tmp_path / name).write_bytes(b"x")
+
+    found = discover_media(str(tmp_path), media_exts="mkv,mov")
+    names = [os.path.basename(p) for p in found]
+    assert names == ["a.mkv", "d.mov"]
+
+
+# ---------------------------------------------------------------------------
+# parse_media_exts - normalising the user-supplied extension string
+# ---------------------------------------------------------------------------
+def test_parse_media_exts_mixed_separators_and_case():
+    """Commas, spaces, semicolons, mixed case and optional dots all normalise
+    to a set of lower-case dot-prefixed extensions."""
+    result = parse_media_exts("mp4, MKV; .avi  MOV")
+    assert result == {".mp4", ".mkv", ".avi", ".mov"}
+
+
+def test_parse_media_exts_accepts_iterable():
+    assert parse_media_exts([".MP4", "mkv"]) == {".mp4", ".mkv"}
+
+
+def test_parse_media_exts_falls_back_on_empty():
+    """An empty/blank spec falls back to the built-in default set (non-empty)."""
+    fallback = parse_media_exts("")
+    assert isinstance(fallback, set) and fallback
+    assert ".mp4" in fallback
+
+
+# ---------------------------------------------------------------------------
+# normalize_part_markers / titles_equivalent - part-format tolerance
+# ---------------------------------------------------------------------------
+def test_normalize_part_markers_variants_collapse():
+    canonical = normalize_part_markers("The Prisoner Part 1")
+    assert normalize_part_markers("The Prisoner (1)") == canonical
+    assert normalize_part_markers("The Prisoner (Part 1)") == canonical
+    assert normalize_part_markers("The Prisoner Part I") == canonical
+
+
+def test_titles_equivalent_part_formats():
+    assert titles_equivalent("The Prisoner Part 1", "The Prisoner (1)")
+    assert titles_equivalent("The Prisoner Part I", "The Prisoner (1)")
+
+
+def test_titles_equivalent_distinguishes_parts():
+    """Different part numbers are NOT equivalent."""
+    assert not titles_equivalent("The Prisoner Part 1", "The Prisoner Part 2")
+
+
+def test_titles_equivalent_respects_flag_off():
+    """With ignore_part_format=False, punctuation differences are significant."""
+    assert not titles_equivalent(
+        "The Prisoner Part 1", "The Prisoner (1)",
+        ignore_part_format=False)
 
 
 # ---------------------------------------------------------------------------

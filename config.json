@@ -1,6 +1,10 @@
 {
   "fingerprint": {
-    "shingle_sizes": [3, 4, 5],
+    "shingle_sizes": [
+      3,
+      4,
+      5
+    ],
     "min_word_length": 2,
     "metaphone_primary_only": false,
     "drop_stopwords": false,
@@ -26,6 +30,11 @@
       "weight": 1.0,
       "min_margin": 0.12
     }
+  },
+  "identify": {
+    "media_extensions": "mp4,mkv,avi,mov,m4v,wmv,flv,webm,mpg,mpeg,ts,m4a,wav,mp3,flac,aac,ogg",
+    "ignore_part_format_differences": true,
+    "_identify_comment": "media_extensions: comma-separated list of file extensions to scan when identifying (case-insensitive, dots optional). ignore_part_format_differences: treat 'Part 1', '(1)', '(Part 1)', 'Part I' as equivalent so multi-part episodes are not flagged for rename purely due to punctuation differences."
   },
   "audio": {
     "sample_rate": 16000,

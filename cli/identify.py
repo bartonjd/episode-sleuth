@@ -121,7 +121,8 @@ def main(argv=None):
     if args.file:
         media = [args.file]
     else:
-        media = discover_media(args.dir)
+        media = discover_media(
+            args.dir, cfg.get("identify", {}).get("media_extensions"))
     if not media:
         print("No media files found.", file=sys.stderr)
         return 1

@@ -14,8 +14,12 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     FluentIcon as FIF, PrimaryPushButton, PushButton, SpinBox, ComboBox,
     ProgressBar, InfoBar, InfoBarPosition, BodyLabel, TitleLabel, CaptionLabel,
-    StrongBodyLabel, MessageBox,
+    StrongBodyLabel, MessageBox, LineEdit, SwitchButton,
 )
+
+# Default media extensions offered in the Identify options card. Kept in sync
+# with config.json's identify.media_extensions default.
+DEFAULT_MEDIA_EXTS = "mp4,mkv,avi,mov,m4v,wmv,flv,webm,mpg,mpeg,ts,m4a,wav,mp3,flac,aac,ogg"
 
 from ..constants import DEFAULT_DB
 from ..widgets import Card, _path_row
@@ -116,6 +120,39 @@ class SettingsInterface(QWidget):
         perf_card.addLayout(perf_grid)
         root.addWidget(perf_card)
 
+        # identify options card
+        idf_card = Card("Identify options")
+        idf_grid = QGridLayout()
+        idf_grid.setHorizontalSpacing(16)
+        idf_grid.setVerticalSpacing(10)
+
+        idf_grid.addWidget(BodyLabel("Media file extensions"), 0, 0)
+        self.exts_edit = LineEdit()
+        self.exts_edit.setText(self.cfg.get("media_extensions", DEFAULT_MEDIA_EXTS))
+        self.exts_edit.setPlaceholderText(DEFAULT_MEDIA_EXTS)
+        idf_grid.addWidget(self.exts_edit, 0, 1)
+        self.exts_reset_btn = PushButton("Reset", self, FIF.CANCEL)
+        self.exts_reset_btn.clicked.connect(
+            lambda: self.exts_edit.setText(DEFAULT_MEDIA_EXTS))
+        idf_grid.addWidget(self.exts_reset_btn, 0, 2)
+        idf_grid.addWidget(
+            CaptionLabel("Comma-separated list of extensions to scan when "
+                         "identifying a folder (case-insensitive, dots "
+                         "optional)."), 1, 0, 1, 3)
+
+        idf_grid.addWidget(BodyLabel("Ignore part-format differences"), 2, 0)
+        self.part_switch = SwitchButton()
+        self.part_switch.setChecked(
+            bool(self.cfg.get("ignore_part_format_differences", True)))
+        idf_grid.addWidget(self.part_switch, 2, 1, alignment=Qt.AlignLeft)
+        idf_grid.addWidget(
+            CaptionLabel("Treat \"Part 1\", \"(1)\", \"(Part 1)\" and "
+                         "\"Part I\" as the same, so multi-part episodes are "
+                         "not flagged for rename over punctuation."), 3, 0, 1, 3)
+        idf_grid.setColumnStretch(1, 1)
+        idf_card.addLayout(idf_grid)
+        root.addWidget(idf_card)
+
         # speech recognition card
         stt_card = Card("Speech recognition (Vosk model)")
         stt_grid = QGridLayout()
@@ -203,6 +240,8 @@ class SettingsInterface(QWidget):
             "theme": self.theme_combo.currentText(),
             "max_workers": int(self.workers_spin.value()),
             "vosk_model_size": self._selected_model_size(),
+            "media_extensions": self.exts_edit.text().strip(),
+            "ignore_part_format_differences": bool(self.part_switch.isChecked()),
         }
 
     def _on_field_changed(self, *args):
@@ -630,6 +669,8 @@ class SettingsInterface(QWidget):
             theme=self.theme_combo.currentText(),
             max_workers=int(self.workers_spin.value()),
             vosk_model_size=size,
+            media_extensions=self.exts_edit.text().strip() or DEFAULT_MEDIA_EXTS,
+            ignore_part_format_differences=bool(self.part_switch.isChecked()),
         )
         self.cfg.save()
         self._saved_model_size = size

@@ -152,6 +152,10 @@ class IdentifyInterface(QWidget):
         self.filter_edit.setClearButtonEnabled(True)
         filter_row.addWidget(BodyLabel("Filter"))
         filter_row.addWidget(self.filter_edit, 1)
+        # Running tally of how many files are in the results table. Updated as
+        # rows arrive and whenever the filter hides/shows rows.
+        self.count_label = BodyLabel("0 items")
+        filter_row.addWidget(self.count_label)
         root.addLayout(filter_row)
 
         # --- results table ---
@@ -242,10 +246,14 @@ class IdentifyInterface(QWidget):
             runtime_tolerance=4.0,
             vosk_model_size=self.cfg.get("vosk_model_size", "small"),
             show_title=self.cfg.get("last_show_title", ""),
+            media_extensions=self.cfg.get("media_extensions", "") or None,
+            ignore_part_format=bool(
+                self.cfg.get("ignore_part_format_differences", True)),
         )
 
         self.table.setRowCount(0)
         self.results = []
+        self._update_count()
         self.identify_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress.setVisible(True)
@@ -303,6 +311,18 @@ class IdentifyInterface(QWidget):
                 if it is not None:
                     hay.append(it.text().lower())
             self.table.setRowHidden(row, q not in " ".join(hay))
+        self._update_count()
+
+    def _update_count(self):
+        """Refresh the entry tally. Shows the visible/total split while a filter
+        is active, otherwise just the total number of scanned files."""
+        total = self.table.rowCount()
+        visible = sum(1 for row in range(total)
+                      if not self.table.isRowHidden(row))
+        if visible != total:
+            self.count_label.setText(f"{visible} of {total} items")
+        else:
+            self.count_label.setText(f"{total} item" + ("" if total == 1 else "s"))
 
     def _show_notes(self, filename: str, notes: str):
         box = MessageBox("Notes", f"{filename}\n\n{notes or 'No notes.'}",
@@ -376,8 +396,12 @@ class IdentifyInterface(QWidget):
         centered = {self.C_STATUS, self.C_EPISODE, self.C_MATCH, self.C_AGREE}
         for col, text in values.items():
             item = QTableWidgetItem(str(text))
-            if col in centered:
+            # Center the placeholder dash on correctly-named rows so it reads as
+            # "nothing to do here" instead of a left-aligned stray character.
+            if col in centered or (col == self.C_SUGGESTED and suggested_disp == "-"):
                 item.setTextAlignment(Qt.AlignCenter)
+            if col == self.C_SUGGESTED and status == "correct":
+                item.setToolTip("Already correctly named - no rename needed.")
             self.table.setItem(row, col, item)
 
         brush = QBrush(tint)
@@ -404,6 +428,8 @@ class IdentifyInterface(QWidget):
         # Re-apply the current filter so newly added rows respect it.
         if self.filter_edit.text().strip():
             self._filter_results(self.filter_edit.text())
+        else:
+            self._update_count()
 
     def _teardown_run(self):
         self.identify_btn.setEnabled(True)

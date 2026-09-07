@@ -404,6 +404,10 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
             elif (file_season is not None and file_episode is not None
                   and file_season == best.season
                   and file_episode == best.episode):
+                # Same S/E number => correctly placed. Note: a differing
+                # multi-part title format ("Part 1" vs "(1)") never triggers a
+                # rename here because the verdict is number-based, honouring
+                # identify.ignore_part_format_differences by construction.
                 name_status = "correct"
             else:
                 name_status = "rename"
