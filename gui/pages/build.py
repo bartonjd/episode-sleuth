@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QFileDialog
 from qfluentwidgets import (
     FluentIcon as FIF, PrimaryPushButton, PushButton, LineEdit,
     IndeterminateProgressBar, TextEdit, InfoBar, InfoBarPosition,
-    TitleLabel, CaptionLabel,
+    TitleLabel, CaptionLabel, CheckBox,
 )
 
 from ..constants import HERE, DEFAULT_DB
@@ -54,6 +54,23 @@ class BuildInterface(QWidget):
         self.show_title_edit.setText(self.cfg.get("last_show_title", ""))
         self.show_title_edit.setClearButtonEnabled(True)
         subs_card.addWidget(self.show_title_edit)
+
+        # Overwrite existing entries: when checked, re-process files already in
+        # the database and replace their fingerprints instead of skipping them.
+        self.overwrite_check = CheckBox(
+            "Overwrite existing entries (re-index files already in the library)")
+        self.overwrite_check.setChecked(
+            bool(self.cfg.get("build_overwrite", False)))
+        subs_card.addWidget(self.overwrite_check)
+
+        # Fetch episode durations online (TVMaze). Stored as the expected runtime
+        # and used to flag duration mismatches at identify time.
+        self.duration_check = CheckBox(
+            "Fetch episode durations online (TVMaze) for runtime validation")
+        self.duration_check.setChecked(
+            bool(self.cfg.get("build_fetch_duration", False)))
+        subs_card.addWidget(self.duration_check)
+
         self.subs_btn = PrimaryPushButton("Add subtitles to library", self, FIF.FONT)
         self.subs_btn.clicked.connect(self._build_subs)
         subs_card.addWidget(self.subs_btn)
@@ -86,7 +103,11 @@ class BuildInterface(QWidget):
             self._error("Pick a subtitle file or folder first.")
             return
         show_title = self.show_title_edit.text().strip()
-        self.cfg.update(last_subtitle_source=path, last_show_title=show_title)
+        overwrite = self.overwrite_check.isChecked()
+        fetch_duration = self.duration_check.isChecked()
+        self.cfg.update(last_subtitle_source=path, last_show_title=show_title,
+                        build_overwrite=overwrite,
+                        build_fetch_duration=fetch_duration)
         self.cfg.save()
         flag = "--dir" if os.path.isdir(path) else "--file"
         # Build in parallel using the shared "Max parallel workers" setting
@@ -100,6 +121,10 @@ class BuildInterface(QWidget):
                "--workers", str(workers)]
         if show_title:
             cmd += ["--show-title", show_title]
+        if overwrite:
+            cmd += ["--overwrite"]
+        if fetch_duration:
+            cmd += ["--fetch-duration"]
         self._run(cmd)
 
     def _run(self, cmd: List[str]):

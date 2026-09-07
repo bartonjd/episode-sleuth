@@ -268,6 +268,8 @@ class MediaInfo:
     source: str = ""                # original file / url
     show_title: Optional[str] = None    # TV show this episode belongs to
     episode_title: Optional[str] = None  # parsed episode title (e.g. "The Diner")
+    duration_seconds: Optional[int] = None  # expected episode runtime (seconds)
+    duration_source: Optional[str] = None   # "tvmaze" (authoritative) or "subtitle" (fallback)
 
     def label(self) -> str:
         y = f" ({self.year})" if self.year else ""
@@ -389,6 +391,17 @@ class FingerprintDB:
             cur.execute("ALTER TABLE media ADD COLUMN show_title TEXT")
         if "episode_title" not in existing_cols:
             cur.execute("ALTER TABLE media ADD COLUMN episode_title TEXT")
+        # ``duration_seconds`` (expected episode runtime, used for the duration
+        # sanity check at match time) was added later still. Same in-place
+        # ALTER TABLE migration; older rows default to NULL (unknown runtime).
+        if "duration_seconds" not in existing_cols:
+            cur.execute("ALTER TABLE media ADD COLUMN duration_seconds INTEGER")
+        # ``duration_source`` records where the runtime came from: "tvmaze"
+        # (authoritative online lookup) or "subtitle" (last-cue fallback, less
+        # reliable). Only authoritative values drive the hard duration-mismatch
+        # review flag at match time.
+        if "duration_source" not in existing_cols:
+            cur.execute("ALTER TABLE media ADD COLUMN duration_source TEXT")
 
         self.conn.commit()
 
@@ -402,22 +415,29 @@ class FingerprintDB:
         )
         row = cur.fetchone()
         if row:
-            # Backfill the newer show_title / episode_title columns if this row
-            # was created before they existed (or was imported without them).
-            if info.show_title is not None or info.episode_title is not None:
+            # Backfill the newer show_title / episode_title / duration_seconds
+            # columns if this row was created before they existed (or was
+            # imported without them). COALESCE keeps any existing value.
+            if (info.show_title is not None or info.episode_title is not None
+                    or info.duration_seconds is not None):
                 cur.execute(
                     "UPDATE media SET show_title=COALESCE(?, show_title), "
-                    "episode_title=COALESCE(?, episode_title) WHERE id=?",
-                    (info.show_title, info.episode_title, row["id"]),
+                    "episode_title=COALESCE(?, episode_title), "
+                    "duration_seconds=COALESCE(?, duration_seconds), "
+                    "duration_source=COALESCE(?, duration_source) WHERE id=?",
+                    (info.show_title, info.episode_title,
+                     info.duration_seconds, info.duration_source, row["id"]),
                 )
                 self.conn.commit()
             return row["id"]
         cur.execute(
             """INSERT INTO media (title, year, media_type, season, episode, source,
-                                  show_title, episode_title)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                                  show_title, episode_title, duration_seconds,
+                                  duration_source)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (info.title, info.year, info.media_type, info.season, info.episode,
-             info.source, info.show_title, info.episode_title),
+             info.source, info.show_title, info.episode_title,
+             info.duration_seconds, info.duration_source),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -490,7 +510,7 @@ class FingerprintDB:
         cur = self.conn.cursor()
         cur.execute(
             "SELECT title, year, media_type, season, episode, source, "
-            "show_title, episode_title "
+            "show_title, episode_title, duration_seconds, duration_source "
             "FROM media WHERE id=?", (media_id,))
         r = cur.fetchone()
         if not r:
@@ -499,6 +519,8 @@ class FingerprintDB:
             title=r["title"], year=r["year"], media_type=r["media_type"],
             season=r["season"], episode=r["episode"], source=r["source"] or "",
             show_title=r["show_title"], episode_title=r["episode_title"],
+            duration_seconds=r["duration_seconds"],
+            duration_source=r["duration_source"],
         )
 
     def clear_media(self, info: MediaInfo) -> None:
@@ -645,6 +667,52 @@ class FingerprintDB:
         cur = self.conn.cursor()
         cur.execute("SELECT * FROM media ORDER BY title, season, episode")
         return cur.fetchall()
+
+    def media_fingerprint_counts(self) -> Dict[int, int]:
+        """Return ``{media_id: fingerprint_count}`` for every media row.
+
+        Used by the library management UI to show how many phonetic
+        fingerprints back each reference episode.
+        """
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT media_id, COUNT(*) AS c FROM fingerprints GROUP BY media_id")
+        return {r["media_id"]: r["c"] for r in cur.fetchall()}
+
+    def update_media(self, media_id: int, **fields) -> bool:
+        """Update editable columns of one media row by id.
+
+        Accepts any of ``title``, ``year``, ``media_type``, ``season``,
+        ``episode``, ``source``, ``show_title``, ``episode_title`` and
+        ``duration_seconds``. Only the fields passed are changed; ``None`` is a
+        valid value (clears the column). Returns True if a row was updated.
+        """
+        allowed = {
+            "title", "year", "media_type", "season", "episode", "source",
+            "show_title", "episode_title", "duration_seconds", "duration_source",
+        }
+        sets = [(k, v) for k, v in fields.items() if k in allowed]
+        if not sets:
+            return False
+        assignments = ", ".join(f"{k}=?" for k, _ in sets)
+        params = [v for _, v in sets]
+        params.append(media_id)
+        cur = self.conn.cursor()
+        cur.execute(f"UPDATE media SET {assignments} WHERE id=?", params)
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def delete_media(self, media_id: int) -> bool:
+        """Delete one media row and all of its fingerprints / token stream.
+
+        Returns True if the media row existed and was removed.
+        """
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM fingerprints WHERE media_id=?", (media_id,))
+        cur.execute("DELETE FROM media_tokens WHERE media_id=?", (media_id,))
+        cur.execute("DELETE FROM media WHERE id=?", (media_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def count_fingerprints(self, media_ids: Optional[Iterable[int]] = None) -> int:
         """Number of phonetic fingerprint rows, optionally scoped to media_ids.

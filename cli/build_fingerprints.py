@@ -53,6 +53,9 @@ from fingerprint_core import (
     MediaInfo, fingerprint_text, phonetic_token_stream,
 )
 import subtitle_utils as su
+from engine.duration_lookup import (
+    fetch_episode_runtime, subtitle_duration_fallback,
+)
 
 # Default number of parallel workers for building (matches the identifier).
 DEFAULT_BUILD_WORKERS = 4
@@ -69,6 +72,11 @@ def _compute_fingerprints(path: str, fp_cfg: FingerprintConfig,
     ``(info, rows, token_stream, token_starts)`` ready to be handed to
     :func:`_store_fingerprints`, or ``None`` if the file could not be parsed or
     contained no dialogue.
+
+    The returned tuple carries a fifth element ``sub_duration`` (an approximate
+    runtime in seconds derived from the last subtitle cue) so the DB-writing
+    stage can store an expected duration even when online lookup is disabled or
+    unavailable. Computing it here (no network) keeps the write stage cheap.
     """
     info = su.parse_filename_metadata(path, default_title, default_year)
     if media_type_override:
@@ -99,18 +107,50 @@ def _compute_fingerprints(path: str, fp_cfg: FingerprintConfig,
             token_stream.append(tok)
             token_starts.append(start_ms)
 
-    return info, rows, token_stream, token_starts
+    sub_duration = subtitle_duration_fallback(cues)
+    return info, rows, token_stream, token_starts, sub_duration
 
 
-def _store_fingerprints(db: FingerprintDB, computed, reindex: bool = True) -> int:
+def _store_fingerprints(db: FingerprintDB, computed, reindex: bool = True,
+                        fetch_duration: bool = False) -> int:
     """Write pre-computed fingerprints to the DB. MUST run on a single thread.
 
     SQLite writes on the shared connection are not safe to issue concurrently,
     so all callers funnel their writes through here on the orchestrating thread
     while the heavy parsing/encoding happens in parallel via
     :func:`_compute_fingerprints`.
+
+    ``fetch_duration`` (optional) tries the online TVMaze lookup for the
+    episode's official runtime and stores it as the expected
+    ``duration_seconds``. The lookup is best-effort and non-blocking: on any
+    failure it silently falls back to the subtitle-derived duration computed
+    during parsing, so a build never stalls or fails because of it.
     """
-    info, rows, token_stream, token_starts = computed
+    info, rows, token_stream, token_starts, sub_duration = computed
+
+    # Resolve the expected episode runtime (seconds). Prefer the authoritative
+    # online value when requested; always fall back to the subtitle heuristic so
+    # a duration is stored whenever one can be determined at all.
+    duration_seconds = sub_duration
+    duration_source = "subtitle" if sub_duration else None
+    if fetch_duration:
+        show = info.show_title or info.title
+        online = None
+        try:
+            online = fetch_episode_runtime(show, info.season, info.episode)
+        except Exception as exc:  # never let duration lookup break a build
+            logging.debug("Duration lookup failed for %s: %s", info.label(), exc)
+        if online:
+            duration_seconds = online
+            duration_source = "tvmaze"
+            logging.info("  duration (TVMaze) %-35s -> %ds",
+                         info.label(), online)
+        elif sub_duration:
+            logging.debug("  duration (subtitle fallback) %s -> %ds",
+                          info.label(), sub_duration)
+    info.duration_seconds = duration_seconds
+    info.duration_source = duration_source
+
     if reindex:
         db.clear_media(info)
     media_id = db.get_or_create_media(info)
@@ -130,7 +170,7 @@ def _store_fingerprints(db: FingerprintDB, computed, reindex: bool = True) -> in
 def fingerprint_subtitle_file(path: str, db: FingerprintDB, fp_cfg: FingerprintConfig,
                               default_title=None, default_year=None,
                               media_type_override=None, reindex=True,
-                              show_title=None) -> int:
+                              show_title=None, fetch_duration=False) -> int:
     """Parse one subtitle file and add its fingerprints to the DB.
 
     ``show_title`` (optional) associates the episode with a TV show, overriding
@@ -146,11 +186,13 @@ def fingerprint_subtitle_file(path: str, db: FingerprintDB, fp_cfg: FingerprintC
                                      media_type_override, show_title)
     if computed is None:
         return 0
-    return _store_fingerprints(db, computed, reindex=reindex)
+    return _store_fingerprints(db, computed, reindex=reindex,
+                               fetch_duration=fetch_duration)
 
 
 def _run_sequential(to_process, db, fp_cfg, title, year, media_type,
-                    show_title, progress, done_offset=0, total=None):
+                    show_title, progress, done_offset=0, total=None,
+                    fetch_duration=False):
     """Process ``to_process`` one file at a time on the current thread."""
     total = total if total is not None else len(to_process)
     grand = processed = 0
@@ -160,7 +202,8 @@ def _run_sequential(to_process, db, fp_cfg, title, year, media_type,
         computed = _compute_fingerprints(f, fp_cfg, title, year, media_type,
                                          show_title)
         if computed is not None:
-            grand += _store_fingerprints(db, computed)
+            grand += _store_fingerprints(db, computed,
+                                         fetch_duration=fetch_duration)
         processed += 1
         if progress:
             progress(done, total, f)
@@ -168,7 +211,8 @@ def _run_sequential(to_process, db, fp_cfg, title, year, media_type,
 
 
 def _process_files(files, db, fp_cfg, title, year, media_type, force=False,
-                   show_title=None, workers=DEFAULT_BUILD_WORKERS, progress=None):
+                   show_title=None, workers=DEFAULT_BUILD_WORKERS, progress=None,
+                   fetch_duration=False):
     """Fingerprint a list of subtitle files, in parallel when it helps.
 
     Parsing + phonetic encoding for each file (the CPU-heavy part) runs across a
@@ -213,7 +257,8 @@ def _process_files(files, db, fp_cfg, title, year, media_type, force=False,
     # worker pool would only add overhead).
     if workers <= 1 or total == 1:
         g, p = _run_sequential(to_process, db, fp_cfg, title, year, media_type,
-                               show_title, progress, total=total)
+                               show_title, progress, total=total,
+                               fetch_duration=fetch_duration)
         return grand + g, processed + p, skipped
 
     # Parallel path: compute across worker processes, store serially as results
@@ -242,7 +287,8 @@ def _process_files(files, db, fp_cfg, title, year, media_type, force=False,
                     logging.info("[%d/%d] Processed %s", done, total,
                                  os.path.basename(f))
                     if computed is not None:
-                        grand += _store_fingerprints(db, computed)
+                        grand += _store_fingerprints(
+                            db, computed, fetch_duration=fetch_duration)
                     processed += 1
                     completed.add(f)
                     if progress:
@@ -262,12 +308,14 @@ def _process_files(files, db, fp_cfg, title, year, media_type, force=False,
     # Last resort: sequential for anything still not processed.
     g, p = _run_sequential(to_process, db, fp_cfg, title, year, media_type,
                            show_title, progress, done_offset=processed,
-                           total=processed + len(to_process))
+                           total=processed + len(to_process),
+                           fetch_duration=fetch_duration)
     return grand + g, processed + p, skipped
 
 
 def run_directory(directory, db, fp_cfg, title, year, media_type, force=False,
-                  show_title=None, workers=DEFAULT_BUILD_WORKERS):
+                  show_title=None, workers=DEFAULT_BUILD_WORKERS,
+                  fetch_duration=False):
     if os.path.isfile(directory):
         files = [directory]
     else:
@@ -279,11 +327,13 @@ def run_directory(directory, db, fp_cfg, title, year, media_type, force=False,
     if show_title:
         logging.info("Associating all files with TV show: %s", show_title)
     return _process_files(files, db, fp_cfg, title, year, media_type,
-                          force=force, show_title=show_title, workers=workers)
+                          force=force, show_title=show_title, workers=workers,
+                          fetch_duration=fetch_duration)
 
 
 def run_show(query, db, fp_cfg, cfg, limit, media_type, year_override=None,
-             force=False, show_title=None, workers=DEFAULT_BUILD_WORKERS):
+             force=False, show_title=None, workers=DEFAULT_BUILD_WORKERS,
+             fetch_duration=False):
     # The year may come either inside the --show string ("Matlock 1986") or
     # via the separate --year flag. Combine both so the API year filter works.
     title, year = su._parse_query(query)
@@ -305,7 +355,7 @@ def run_show(query, db, fp_cfg, cfg, limit, media_type, year_override=None,
         return 0, 0, 0
     return _process_files(files, db, fp_cfg, title, year, media_type,
                           force=force, show_title=show_title or title,
-                          workers=workers)
+                          workers=workers, fetch_duration=fetch_duration)
 
 
 def main(argv=None):
@@ -327,6 +377,18 @@ def main(argv=None):
                         help="Re-process files even if they are already in the "
                              "database. By default, files that have already been "
                              "fingerprinted are skipped automatically.")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Overwrite existing library entries: re-process "
+                             "files already in the database and replace their "
+                             "fingerprints instead of skipping them. Equivalent "
+                             "to --force; provided as a clearer name for the "
+                             "'replace existing entries' behaviour.")
+    parser.add_argument("--fetch-duration", dest="fetch_duration",
+                        action="store_true",
+                        help="Look up each episode's official runtime online "
+                             "(TVMaze, no API key) and store it as the expected "
+                             "duration. Best-effort and non-blocking: falls back "
+                             "to the subtitle's last-cue time if unavailable.")
     parser.add_argument("--workers", type=int, default=DEFAULT_BUILD_WORKERS,
                         help="Number of parallel worker threads used to parse "
                              "and fingerprint subtitle files (default: "
@@ -360,25 +422,33 @@ def main(argv=None):
             if not rows:
                 print("Database is empty.")
             else:
-                print(f"{'Title':30} {'Year':6} {'Type':6} {'S':>3} {'E':>3}")
-                print("-" * 56)
+                print(f"{'Title':30} {'Year':6} {'Type':6} {'S':>3} {'E':>3} "
+                      f"{'Dur':>6}")
+                print("-" * 63)
                 for r in rows:
+                    keys = r.keys()
+                    dur = r["duration_seconds"] if "duration_seconds" in keys else None
+                    dur_str = f"{int(dur)//60}m" if dur else ""
                     print(f"{r['title'][:30]:30} {str(r['year'] or ''):6} "
                           f"{r['media_type']:6} {str(r['season'] or ''):>3} "
-                          f"{str(r['episode'] or ''):>3}")
+                          f"{str(r['episode'] or ''):>3} {dur_str:>6}")
             print("\nStats:", db.stats())
             return 0
 
+        # --overwrite is a clearer alias for --force (re-process existing files
+        # and replace their entries instead of skipping them).
+        force = args.force or args.overwrite
         if args.show:
             total, processed, skipped = run_show(
                 args.show, db, fp_cfg, cfg, args.limit, args.type,
-                year_override=args.year, force=args.force,
-                show_title=args.show_title, workers=args.workers)
+                year_override=args.year, force=force,
+                show_title=args.show_title, workers=args.workers,
+                fetch_duration=args.fetch_duration)
         elif args.dir or args.file:
             total, processed, skipped = run_directory(
                 args.dir or args.file, db, fp_cfg, args.title, args.year,
-                args.type, force=args.force, show_title=args.show_title,
-                workers=args.workers)
+                args.type, force=force, show_title=args.show_title,
+                workers=args.workers, fetch_duration=args.fetch_duration)
         else:
             parser.print_help()
             return 1

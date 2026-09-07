@@ -33,6 +33,7 @@ from .constants import (
 from .logging_bridge import LogBridge, QtLogHandler
 from .pages.identify import IdentifyInterface
 from .pages.build import BuildInterface
+from .pages.library import LibraryInterface
 from .pages.settings import SettingsInterface
 from .pages.log import LogInterface
 
@@ -75,12 +76,15 @@ class MainWindow(FluentWindow):
         # pages
         self.identify_interface = IdentifyInterface(self)
         self.build_interface = BuildInterface(self)
+        self.library_interface = LibraryInterface(self)
         self.settings_interface = SettingsInterface(self)
         self.log_interface = LogInterface(self)
         self.log_bridge.message.connect(self.log_interface.append)
 
         self.addSubInterface(self.identify_interface, FIF.SEARCH, "Identify")
         self.addSubInterface(self.build_interface, FIF.LIBRARY, "Build library")
+        self.addSubInterface(self.library_interface, FIF.BOOK_SHELF,
+                             "Manage library")
         self.addSubInterface(self.settings_interface, FIF.SETTING, "Settings",
                              NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.log_interface, FIF.COMMAND_PROMPT, "Log",

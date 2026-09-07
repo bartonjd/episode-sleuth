@@ -160,6 +160,36 @@ def transcribe_samples(path: str, windows: List[Tuple[float, float]],
     return per_window, got
 
 
+def _duration_tie_break(results, db, file_duration_s: float) -> None:
+    """Reorder a near-tied ``results`` list to prefer the closer-duration match.
+
+    When the top two candidates score almost identically, the one whose stored
+    expected runtime is closest to the file's actual duration is the better bet.
+    Operates in place on the first two elements only (the near-tie), and does
+    nothing if neither candidate has a stored duration. Never raises.
+    """
+    if len(results) < 2 or file_duration_s <= 0:
+        return
+    try:
+        pair = results[:2]
+        best_i = None
+        best_diff = None
+        for i, r in enumerate(pair):
+            minfo = db.media_info(r.media_id)
+            exp = minfo.duration_seconds if minfo is not None else None
+            if not exp or exp <= 0:
+                continue
+            diff = abs(file_duration_s - float(exp))
+            if best_diff is None or diff < best_diff:
+                best_diff = diff
+                best_i = i
+        # If the second candidate is a clearly closer duration match, promote it.
+        if best_i == 1:
+            results[0], results[1] = results[1], results[0]
+    except Exception:  # a tie-break must never break identification
+        return
+
+
 # ---------------------------------------------------------------------------
 # Orchestration for one file
 # ---------------------------------------------------------------------------
@@ -186,6 +216,7 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
         sr = cfg.get("audio", {}).get("sample_rate", 16000)
         best: Optional[EpisodeGuess] = None
         best_match_count = 0
+        best_media_id: Optional[int] = None  # DB id of the winning candidate
         runner_up_margin: Optional[float] = None  # gap to the 2nd-best candidate
         notes_parts: List[str] = []
         boosted = False
@@ -233,6 +264,16 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                 notes = apply_metadata_boosts(
                     results, expected_show, query_episode_title)
                 boosted = bool(notes)
+                # Duration tie-break: when the top two candidates are within a
+                # hair of each other, prefer the one whose stored expected
+                # runtime is closest to this file's actual duration. This nudges
+                # near-ties toward the episode that also matches on length,
+                # instead of leaving the order to scoring noise alone.
+                min_margin = cfg.get("matching", {}).get("min_exact_margin", 0.06)
+                if (duration > 0 and len(results) >= 2
+                        and (results[0].confidence - results[1].confidence)
+                        < min_margin):
+                    _duration_tie_break(results, db, duration)
                 m = results[0].media
                 if notes:
                     notes_parts.append(", ".join(notes))
@@ -245,6 +286,7 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                     episode_title=(getattr(m, "episode_title", None) or ""),
                 )
                 best_match_count = results[0].match_count
+                best_media_id = results[0].media_id
                 # Ambiguity signal: how far ahead is the winner of the runner-up?
                 # (computed on the same, post-boost, sorted list)
                 if len(results) >= 2:
@@ -269,6 +311,7 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                         episode_title=(getattr(m, "episode_title", None) or ""),
                     )
                     best_match_count = fuzzy_results[0].match_count
+                    best_media_id = fuzzy_results[0].media_id
         elif transcriber is not None:
             notes_parts.append("no speech recognised")
 
@@ -307,6 +350,44 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                     needs_review = True
                     notes_parts.append(
                         f"runtime {duration/60:.0f}m vs expected {exp}m")
+
+        # Episode-duration validation against the reference library. Each
+        # reference episode may carry an expected ``duration_seconds`` (from the
+        # TVMaze lookup or the subtitle heuristic at build time). If this file's
+        # actual duration differs from the matched episode's expected duration by
+        # more than the allowed fraction, flag it: a large length mismatch is a
+        # strong sign the audio was matched to the wrong episode.
+        if best is not None and best_media_id is not None and duration > 0:
+            tol = float(cfg.get("matching", {}).get(
+                "duration_tolerance_fraction", 0.15))
+            expected_sec = None
+            dur_source = None
+            try:
+                minfo = db.media_info(best_media_id)
+                if minfo is not None:
+                    expected_sec = minfo.duration_seconds
+                    dur_source = minfo.duration_source
+            except Exception:  # never let the check break identification
+                expected_sec = None
+            if expected_sec and expected_sec > 0:
+                rel_diff = abs(duration - expected_sec) / float(expected_sec)
+                if rel_diff > tol:
+                    if dur_source in ("tvmaze", "manual"):
+                        # Authoritative runtime (TVMaze lookup or a manual edit):
+                        # a large mismatch is
+                        # a strong sign of a wrong-episode match -> flag review.
+                        needs_review = True
+                        notes_parts.append(
+                            f"duration mismatch: file is {duration/60:.0f}m, "
+                            f"episode should be ~{expected_sec/60:.0f}m "
+                            f"({rel_diff*100:.0f}% off)")
+                    else:
+                        # Subtitle-derived runtime is only a rough proxy (a
+                        # truncated subtitle underestimates length), so note it
+                        # for the reviewer's eyes but do NOT force a review flag.
+                        notes_parts.append(
+                            f"approx duration off ~{rel_diff*100:.0f}% "
+                            f"(subtitle estimate ~{expected_sec/60:.0f}m)")
 
         # Naming verification: compare the current filename against what the
         # reference library says this episode should be called. This is the
