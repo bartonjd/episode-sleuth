@@ -17,9 +17,9 @@ from qfluentwidgets import (
     StrongBodyLabel, MessageBox, LineEdit, SwitchButton,
 )
 
-# Default media extensions offered in the Identify options card. Kept in sync
-# with config.json's identify.media_extensions default.
-DEFAULT_MEDIA_EXTS = "mp4,mkv,avi,mov,m4v,wmv,flv,webm,mpg,mpeg,ts,m4a,wav,mp3,flac,aac,ogg"
+# Default media extensions offered in the Identify options card. Imported from
+# the engine so config.json, discovery and this UI all share one definition.
+from engine.types import DEFAULT_MEDIA_EXTS
 
 from ..constants import DEFAULT_DB
 from ..widgets import Card, _path_row

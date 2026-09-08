@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional
+from typing import Iterable, List, Optional, Set, Union
 
 from .types import MEDIA_EXTS
 
@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover
     clean_subtitle_filename = None     # type: ignore[assignment]
 
 
-def parse_media_exts(spec) -> set:
+def parse_media_exts(spec: Union[str, Iterable[str], None]) -> Set[str]:
     """Turn a user-supplied extension list into a normalised set.
 
     Accepts a comma/space/semicolon separated string (e.g.
@@ -79,14 +79,16 @@ def normalize_part_markers(title: Optional[str]) -> str:
     m = _PART_RE.search(s)
     if m:
         tok = m.group(1).lower()
-        num = _ROMAN.get(tok, None)
-        if num is None:
+        roman = _ROMAN.get(tok)
+        if roman is not None:
+            num_str = str(roman)
+        else:
             try:
-                num = int(tok)
+                num_str = str(int(tok))
             except ValueError:
-                num = tok
+                num_str = tok
         base = s[:m.start()].strip(" -_")
-        return f"{base} part {num}".strip().lower()
+        return f"{base} part {num_str}".strip().lower()
     return s.strip().lower()
 
 
@@ -142,7 +144,8 @@ def build_suggested_filename(show: str, season: Optional[int],
     return sanitize_filename(stem) + (ext or "")
 
 
-def discover_media(path_dir: str, media_exts=None) -> List[str]:
+def discover_media(path_dir: str,
+                   media_exts: Union[str, Iterable[str], None] = None) -> List[str]:
     """List media files in *path_dir* whose extension is allowed.
 
     *media_exts* may be a set/iterable of extensions or a comma-separated

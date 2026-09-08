@@ -12,14 +12,14 @@ import csv
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from .types import FileResult
 from .matcher import identify_one
 
 
-def batch_identify(media: List[str], db_path: str, fp_cfg, cfg: dict, args,
-                   transcriber, runtimes: Optional[dict] = None,
+def batch_identify(media: List[str], db_path: str, fp_cfg: Any, cfg: dict, args: Any,
+                   transcriber: Any, runtimes: Optional[dict] = None,
                    workers: int = 4,
                    progress: Optional[Callable[[int, int, str], None]] = None
                    ) -> List[FileResult]:

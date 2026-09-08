@@ -25,7 +25,7 @@ import logging
 import re
 import urllib.parse
 import urllib.request
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 # Default per-request network timeout (seconds). Kept short so a hung API never
 # stalls a build for long; failures fall back to the subtitle heuristic.
@@ -41,7 +41,7 @@ _show_id_cache: dict = {}
 _runtime_cache: dict = {}
 
 
-def _http_get_json(url: str, timeout: float):
+def _http_get_json(url: str, timeout: float) -> Optional[Any]:
     """GET ``url`` and parse JSON, or return ``None`` on any error.
 
     A ``User-Agent`` is set because some CDNs reject the default urllib agent.

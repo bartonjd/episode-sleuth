@@ -11,7 +11,7 @@ from typing import List, Optional
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QTableWidgetItem, QHeaderView, QFileDialog, QAbstractItemView,
 )
 
@@ -22,8 +22,14 @@ from qfluentwidgets import (
 )
 
 from engine import (
-    FileResult, write_csv, write_json, episode_id_str,
+    FileResult, write_csv, write_json, episode_id_str, titles_equivalent,
 )
+# Filename title parser (re-exported by the engine; may be None if the optional
+# subtitle_utils dependency is unavailable - used only for the mismatch badge).
+try:
+    from engine.discovery import parse_episode_info
+except Exception:  # pragma: no cover - defensive
+    parse_episode_info = None
 
 # Speech-to-text helpers are imported defensively so the page still loads even
 # when the optional STT deps (pydub, vosk) are absent - it is only used to check
@@ -35,6 +41,7 @@ except Exception:  # pragma: no cover - only if deps are missing
 
 from ..constants import (
     HERE, COLOR_OK, COLOR_MEDIUM, COLOR_REVIEW,
+    LEGEND_OK, LEGEND_MEDIUM, LEGEND_REVIEW, PILL_HIGH, PILL_MED, PILL_LOW,
 )
 from ..widgets import Card, _path_row
 from ..workers import IdentifyWorker
@@ -157,6 +164,9 @@ class IdentifyInterface(QWidget):
         self.count_label = BodyLabel("0 items")
         filter_row.addWidget(self.count_label)
         root.addLayout(filter_row)
+
+        # --- status colour legend ---
+        root.addLayout(self._build_legend())
 
         # --- results table ---
         self.table = TableWidget()
@@ -345,6 +355,137 @@ class IdentifyInterface(QWidget):
         if self.state_tip:
             self.state_tip.setContent(f"{cur}/{total} ({pct}%)  -  {name}")
 
+    @staticmethod
+    def _legend_swatch(colour: str, text: str, tooltip: str) -> QWidget:
+        """One colour swatch + label pair for the status legend."""
+        dot = QLabel()
+        dot.setFixedSize(12, 12)
+        dot.setStyleSheet(
+            f"background-color: {colour}; border-radius: 6px;")
+        lbl = CaptionLabel(text)
+        wrap = QWidget()
+        wrap.setToolTip(tooltip)
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        lay.addWidget(dot)
+        lay.addWidget(lbl)
+        return wrap
+
+    def _build_legend(self) -> QHBoxLayout:
+        """A compact key explaining that row colours indicate naming status
+        (not match confidence)."""
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        row.addWidget(CaptionLabel("Row colour:"))
+        row.addWidget(self._legend_swatch(
+            LEGEND_OK, "Correct",
+            "Green: the file is already named correctly - no rename needed."))
+        row.addWidget(self._legend_swatch(
+            LEGEND_MEDIUM, "Rename",
+            "Amber: the season/episode number differs - this file will be "
+            "renamed."))
+        row.addWidget(self._legend_swatch(
+            LEGEND_REVIEW, "Review",
+            "Red: low confidence or ambiguous - check before acting."))
+        note = CaptionLabel(
+            "(colours show naming status, not the match % confidence)")
+        note.setObjectName("legendNote")
+        row.addWidget(note)
+        row.addStretch(1)
+        return row
+
+    # ---- row appearance / small builders (kept tiny and testable) --------
+    @staticmethod
+    def _row_appearance(r: FileResult, status: str) -> SimpleNamespace:
+        """Map a result's naming verdict to its row tint, label and auto-check.
+
+        The colour is driven by the naming verdict - the whole point of the
+        tool - not by the match confidence:
+            correct -> green, rename -> amber (action needed), unknown -> red.
+        """
+        if r.needs_review or status == "unknown":
+            return SimpleNamespace(tint=COLOR_REVIEW, text="Review",
+                                   auto_check=False)
+        if status == "correct":
+            return SimpleNamespace(tint=COLOR_OK, text="Correct",
+                                   auto_check=True)
+        return SimpleNamespace(tint=COLOR_MEDIUM, text="Rename",
+                               auto_check=True)
+
+    @staticmethod
+    def _make_text_item(text: str, *, center: bool = False,
+                        tooltip: Optional[str] = None) -> QTableWidgetItem:
+        """Build a plain, non-editable table cell."""
+        item = QTableWidgetItem(str(text))
+        if center:
+            item.setTextAlignment(Qt.AlignCenter)
+        if tooltip:
+            item.setToolTip(tooltip)
+        return item
+
+    @staticmethod
+    def _make_confidence_pill(conf: float) -> QWidget:
+        """A compact, colour-coded pill showing the match confidence percent.
+
+        Red (<40%), amber (<70%) or green (>=70%) so the reliability of the
+        audio match is readable at a glance, separate from the naming status
+        that tints the whole row.
+        """
+        if conf >= 0.70:
+            colour = PILL_HIGH
+        elif conf >= 0.40:
+            colour = PILL_MED
+        else:
+            colour = PILL_LOW
+        pill = QLabel(f"{conf:.0%}")
+        pill.setAlignment(Qt.AlignCenter)
+        pill.setStyleSheet(
+            f"background-color: {colour}; color: white; border-radius: 8px; "
+            "padding: 1px 8px; font-weight: 600;")
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(6, 3, 6, 3)
+        lay.addWidget(pill)
+        return wrap
+
+    def _make_notes_button(self, filename: str, notes: str) -> QWidget:
+        """A centered info (i) button that opens the full note text."""
+        btn = ToolButton(FIF.INFO)
+        btn.setFixedSize(26, 26)
+        btn.setToolTip("Show notes")
+        btn.clicked.connect(
+            lambda _=False, fn=filename, nt=notes: self._show_notes(fn, nt))
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addStretch(1)
+        lay.addWidget(btn)
+        lay.addStretch(1)
+        return wrap
+
+    def _title_mismatch(self, r: FileResult, data: dict) -> bool:
+        """True when the identified episode title differs from the title in the
+        on-disk filename, even though the S/E numbers line up.
+
+        This flags likely swapped or mislabelled rips: the audio was matched to
+        an episode whose name is not the one the filename claims.
+        """
+        if parse_episode_info is None:
+            return False
+        identified = (data.get("episode_title") or "").strip()
+        if not identified:
+            return False
+        try:
+            _s, _e, file_title = parse_episode_info(r.filename)
+        except Exception:  # pragma: no cover - defensive
+            return False
+        if not file_title or not str(file_title).strip():
+            return False
+        ignore_pf = bool(self.cfg.get("ignore_part_format_differences", True))
+        return not titles_equivalent(str(file_title), identified,
+                                     ignore_part_format=ignore_pf)
+
     def _add_row(self, r: FileResult):
         self.results.append(r)
         row = self.table.rowCount()
@@ -352,78 +493,63 @@ class IdentifyInterface(QWidget):
         data = r.to_row()
         conf = data["confidence"]
         status = data.get("name_status", "unknown")
-
-        # Tint + auto-check driven by the naming verdict (the point of the tool):
-        #   correct -> green, rename -> amber (action needed), unknown -> red.
-        if r.needs_review or status == "unknown":
-            tint = COLOR_REVIEW
-            auto_check = False
-            status_text = "Review"
-        elif status == "correct":
-            tint = COLOR_OK
-            auto_check = True
-            status_text = "Correct"
-        else:  # rename
-            tint = COLOR_MEDIUM
-            auto_check = True
-            status_text = "Rename"
+        appear = self._row_appearance(r, status)
+        notes = data["notes"] or ("ok" if not r.needs_review else "review")
 
         # checkbox column (stores the result index in UserRole)
         chk = QTableWidgetItem()
         chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-        chk.setCheckState(Qt.Checked if auto_check else Qt.Unchecked)
+        chk.setCheckState(Qt.Checked if appear.auto_check else Qt.Unchecked)
         chk.setData(Qt.UserRole, len(self.results) - 1)
-        self.table.setItem(row, 0, chk)
+        self.table.setItem(row, self.C_CHECK, chk)
 
-        notes = data["notes"] or ("ok" if not r.needs_review else "review")
         # For correctly-named files the suggested name equals the current name;
         # show a dash to keep the column uncluttered. Otherwise show the target.
         suggested = data.get("suggested_filename", "")
-        if status == "correct":
-            suggested_disp = "-"
-        else:
-            suggested_disp = suggested or "-"
-        # Text columns (Notes is a separate icon widget, added below).
-        values = {
-            self.C_FILE: data["filename"],
-            self.C_STATUS: status_text,
-            self.C_EPISODE: data["episode_id"],
-            self.C_TITLE: data.get("episode_title", ""),
-            self.C_SUGGESTED: suggested_disp,
-            self.C_MATCH: f"{conf:.0%}",
-            self.C_AGREE: data["agreement"],
-        }
-        centered = {self.C_STATUS, self.C_EPISODE, self.C_MATCH, self.C_AGREE}
-        for col, text in values.items():
-            item = QTableWidgetItem(str(text))
-            # Center the placeholder dash on correctly-named rows so it reads as
-            # "nothing to do here" instead of a left-aligned stray character.
-            if col in centered or (col == self.C_SUGGESTED and suggested_disp == "-"):
-                item.setTextAlignment(Qt.AlignCenter)
-            if col == self.C_SUGGESTED and status == "correct":
-                item.setToolTip("Already correctly named - no rename needed.")
-            self.table.setItem(row, col, item)
+        suggested_disp = "-" if status == "correct" else (suggested or "-")
 
-        brush = QBrush(tint)
+        # Populate the text columns via the small item builder.
+        self.table.setItem(row, self.C_FILE,
+                           self._make_text_item(data["filename"]))
+        self.table.setItem(row, self.C_STATUS,
+                           self._make_text_item(appear.text, center=True))
+        self.table.setItem(row, self.C_EPISODE,
+                           self._make_text_item(data["episode_id"], center=True))
+        self.table.setItem(row, self.C_AGREE,
+                           self._make_text_item(data["agreement"], center=True))
+
+        # Episode Title - flag a swapped/mismatched title with a badge icon.
+        title_item = self._make_text_item(data.get("episode_title", ""))
+        if self._title_mismatch(r, data):
+            title_item.setIcon(FIF.FLAG.icon())
+            title_item.setToolTip(
+                "Identified title differs from the title in the filename - "
+                "the audio may be mislabelled or swapped. Check before renaming.")
+        self.table.setItem(row, self.C_TITLE, title_item)
+
+        # Suggested name - centered dash + explanatory tooltip when correct.
+        sugg_item = self._make_text_item(
+            suggested_disp,
+            center=(suggested_disp == "-"),
+            tooltip=("Already correctly named - no rename needed."
+                     if status == "correct" else None))
+        self.table.setItem(row, self.C_SUGGESTED, sugg_item)
+
+        # Match % - a placeholder item carries the row tint; the pill sits on top.
+        self.table.setItem(row, self.C_MATCH, QTableWidgetItem())
+        self.table.setCellWidget(row, self.C_MATCH,
+                                 self._make_confidence_pill(conf))
+
+        # Apply the row tint to every text cell.
+        brush = QBrush(appear.tint)
         for col in range(self.table.columnCount()):
             it = self.table.item(row, col)
             if it is not None:
                 it.setBackground(brush)
 
-        # Notes column: a compact info (i) button that opens the full note text.
-        notes_btn = ToolButton(FIF.INFO)
-        notes_btn.setFixedSize(26, 26)
-        notes_btn.setToolTip("Show notes")
-        fname = data["filename"]
-        notes_btn.clicked.connect(
-            lambda _=False, fn=fname, nt=notes: self._show_notes(fn, nt))
-        wrap = QWidget()
-        wrap_lay = QHBoxLayout(wrap)
-        wrap_lay.setContentsMargins(0, 0, 0, 0)
-        wrap_lay.addStretch(1)
-        wrap_lay.addWidget(notes_btn)
-        wrap_lay.addStretch(1)
-        self.table.setCellWidget(row, self.C_NOTES, wrap)
+        # Notes column: a compact info (i) button.
+        self.table.setCellWidget(row, self.C_NOTES,
+                                 self._make_notes_button(data["filename"], notes))
 
         # Re-apply the current filter so newly added rows respect it.
         if self.filter_edit.text().strip():

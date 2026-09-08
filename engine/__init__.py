@@ -33,7 +33,8 @@ if _ROOT not in sys.path:
 
 from .types import (
     FileResult, EpisodeGuess,
-    MEDIA_EXTS, VIDEO_EXTS, AUDIO_EXTS, DEFAULT_SAMPLE_POINTS,
+    MEDIA_EXTS, VIDEO_EXTS, AUDIO_EXTS, DEFAULT_MEDIA_EXTS,
+    DEFAULT_SAMPLE_POINTS,
 )
 from .discovery import (
     discover_media, episode_id_str, build_suggested_filename, sanitize_filename,
@@ -46,7 +47,8 @@ from .batch import batch_identify, write_csv, write_json
 __all__ = [
     # types
     "FileResult", "EpisodeGuess",
-    "MEDIA_EXTS", "VIDEO_EXTS", "AUDIO_EXTS", "DEFAULT_SAMPLE_POINTS",
+    "MEDIA_EXTS", "VIDEO_EXTS", "AUDIO_EXTS", "DEFAULT_MEDIA_EXTS",
+    "DEFAULT_SAMPLE_POINTS",
     # discovery
     "discover_media", "episode_id_str", "build_suggested_filename",
     "sanitize_filename", "parse_media_exts", "normalize_part_markers",

@@ -21,3 +21,18 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
 ]
+
+[tool.mypy]
+# Type-check the identification engine package. The engine is the reusable
+# core, so it is where static typing pays off most. Run with:
+#     MYPYPATH=. mypy engine --explicit-package-bases
+# (explicit-package-bases avoids the root __init__.py making engine resolve
+# under two module names). Imported root modules (fingerprint_core, stt_utils)
+# are followed silently so only the engine's own types are enforced here.
+files = ["engine"]
+explicit_package_bases = true
+namespace_packages = true
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_ignores = false
+no_implicit_optional = true

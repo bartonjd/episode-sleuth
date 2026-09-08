@@ -18,6 +18,16 @@ VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".mpg", ".mpeg",
 AUDIO_EXTS = {".m4a", ".wav", ".mp3", ".flac", ".aac", ".ogg"}
 MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
 
+# The canonical, human-friendly default extension list. This is the single
+# source of truth shared by config.json's identify.media_extensions default,
+# the Settings UI and the discovery filter. It is an ordered, comma-separated
+# string (no dots) so it reads naturally in the Settings text box; the sets
+# above stay authoritative for actual matching via parse_media_exts().
+DEFAULT_MEDIA_EXTS = (
+    "mp4,mkv,avi,mov,m4v,wmv,flv,webm,mpg,mpeg,ts,"
+    "m4a,wav,mp3,flac,aac,ogg"
+)
+
 DEFAULT_SAMPLE_POINTS = [0.10, 0.30, 0.50, 0.70, 0.90]
 
 

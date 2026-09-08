@@ -17,7 +17,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fingerprint_core import (
     FingerprintDB, FingerprintConfig, FuzzyConfig,
@@ -35,7 +35,8 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Phonetic fuzzy fallback (self-contained; tolerant of STT word errors)
 # ---------------------------------------------------------------------------
-def _load_candidate_streams(db: FingerprintDB, media_ids, fp_cfg):
+def _load_candidate_streams(db: FingerprintDB, media_ids: Iterable[int],
+                            fp_cfg: FingerprintConfig) -> Dict[int, Tuple[Any, Any, Any]]:
     """Load ``media_id -> (MediaInfo, ref_tokens, ref_starts)`` for the fuzzy
     matcher. Only media rows that actually have a stored token stream are
     returned."""
@@ -52,7 +53,8 @@ def _load_candidate_streams(db: FingerprintDB, media_ids, fp_cfg):
 
 
 def run_fuzzy_stage(query_text: str, db: FingerprintDB,
-                    fp_cfg: FingerprintConfig, cfg: dict, candidate_ids):
+                    fp_cfg: FingerprintConfig, cfg: dict,
+                    candidate_ids: Optional[Iterable[int]]) -> Tuple[List[Any], FuzzyConfig]:
     """Order-preserving phonetic LCS matching as a fallback when exact
     shingle-hash matching is weak (STT word errors).
 
@@ -145,7 +147,7 @@ def _norm_title(s: Optional[str]) -> str:
     return " ".join(s.split()).strip()
 
 
-def apply_metadata_boosts(results, expected_show: Optional[str],
+def apply_metadata_boosts(results: List[Any], expected_show: Optional[str],
                           query_episode_title: Optional[str]) -> List[str]:
     """Boost candidate confidences using show / episode-title metadata, in place.
 

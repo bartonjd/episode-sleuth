@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from fingerprint_core import FingerprintDB, FingerprintConfig, score_matches
 
@@ -114,8 +114,8 @@ def sample_windows(duration: float, points: List[float],
 # Transcription of the sampled windows
 # ---------------------------------------------------------------------------
 def transcribe_samples(path: str, windows: List[Tuple[float, float]],
-                       transcriber, sample_rate: int,
-                       cancel_check=None
+                       transcriber: Any, sample_rate: int,
+                       cancel_check: Optional[Callable[[], bool]] = None
                        ) -> Tuple[List[Tuple[float, str]], int]:
     """Extract each sample window with ffmpeg and transcribe it.
 
@@ -160,7 +160,7 @@ def transcribe_samples(path: str, windows: List[Tuple[float, float]],
     return per_window, got
 
 
-def _duration_tie_break(results, db, file_duration_s: float) -> None:
+def _duration_tie_break(results: List[Any], db: Any, file_duration_s: float) -> None:
     """Reorder a near-tied ``results`` list to prefer the closer-duration match.
 
     When the top two candidates score almost identically, the one whose stored
@@ -194,8 +194,9 @@ def _duration_tie_break(results, db, file_duration_s: float) -> None:
 # Orchestration for one file
 # ---------------------------------------------------------------------------
 def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
-                 cfg: dict, args, transcriber,
-                 runtimes: Optional[dict], cancel_check=None) -> FileResult:
+                 cfg: dict, args: Any, transcriber: Any,
+                 runtimes: Optional[dict],
+                 cancel_check: Optional[Callable[[], bool]] = None) -> FileResult:
     """Identify a single file by dialogue. Opens its own DB connection so it is
     safe to run in a worker thread; the ``transcriber`` is shared (each
     transcription builds its own recogniser internally).
@@ -235,7 +236,8 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
 
         if transcriber is None:
             notes_parts.append("STT engine unavailable")
-            per_window, got = [], 0
+            per_window: List[Tuple[float, str]] = []
+            got = 0
         else:
             per_window, got = transcribe_samples(
                 path, windows, transcriber, sr, cancel_check=cancel_check)
