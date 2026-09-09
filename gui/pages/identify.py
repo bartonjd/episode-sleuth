@@ -8,7 +8,7 @@ import logging
 from types import SimpleNamespace
 from typing import List, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
@@ -19,6 +19,7 @@ from qfluentwidgets import (
     FluentIcon as FIF, PrimaryPushButton, PushButton, SpinBox, DoubleSpinBox,
     TableWidget, ProgressBar, StateToolTip, InfoBar, InfoBarPosition,
     BodyLabel, TitleLabel, CaptionLabel, MessageBox, SearchLineEdit, ToolButton,
+    SegmentedWidget, CheckBox, MessageBoxBase, SubtitleLabel, TextEdit,
 )
 
 from engine import (
@@ -45,6 +46,10 @@ from ..constants import (
 )
 from ..widgets import Card, _path_row
 from ..workers import IdentifyWorker
+from .. import rename_history
+
+# Order of the status filter tabs and the categories they map to.
+STATUS_TABS = ["All", "Rename", "Correct", "Review"]
 
 
 class IdentifyInterface(QWidget):
@@ -62,6 +67,18 @@ class IdentifyInterface(QWidget):
         self.results: List[FileResult] = []
         self.worker: Optional[IdentifyWorker] = None
         self.state_tip: Optional[StateToolTip] = None
+        # Current status filter tab (All / Rename / Correct / Review) and a
+        # debounce timer so dragging a column border only writes config once.
+        self._status_filter = self._ident_get("status_filter", "All")
+        if self._status_filter not in STATUS_TABS:
+            self._status_filter = "All"
+        self._sort_col = int(self._ident_get("sort_col", -1))
+        self._sort_order = int(self._ident_get("sort_order", 0))
+        self._restoring_layout = True   # suppress width saves during setup
+        self._width_save_timer = QTimer(self)
+        self._width_save_timer.setSingleShot(True)
+        self._width_save_timer.setInterval(400)
+        self._width_save_timer.timeout.connect(self._persist_column_widths)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
@@ -138,16 +155,37 @@ class IdentifyInterface(QWidget):
         actions.addWidget(self.progress, 1)
         actions.addWidget(self.progress_pct)
 
+        self.preview_btn = PushButton("Preview Renames", self, FIF.VIEW)
         self.rename_btn = PushButton("Rename for Plex", self, FIF.EDIT)
+        self.undo_btn = PushButton("Undo Last Rename", self, FIF.CANCEL)
         self.export_json_btn = PushButton("Export JSON", self, FIF.SAVE_AS)
         self.export_csv_btn = PushButton("Export CSV", self, FIF.SAVE)
+        self.preview_btn.clicked.connect(self._preview_renames)
         self.rename_btn.clicked.connect(self._rename_plex)
+        self.undo_btn.clicked.connect(self._undo_last_rename)
         self.export_json_btn.clicked.connect(self._export_json)
         self.export_csv_btn.clicked.connect(self._export_csv)
+        actions.addWidget(self.preview_btn)
         actions.addWidget(self.rename_btn)
+        actions.addWidget(self.undo_btn)
         actions.addWidget(self.export_json_btn)
         actions.addWidget(self.export_csv_btn)
         root.addLayout(actions)
+
+        # --- dry-run preference ---
+        dry_row = QHBoxLayout()
+        dry_row.setSpacing(8)
+        self.dry_run_check = CheckBox("Always preview renames before copying")
+        self.dry_run_check.setChecked(bool(self._ident_get("dry_run_preview", False)))
+        self.dry_run_check.setToolTip(
+            "When ticked, 'Rename for Plex' shows the before/after list for "
+            "review first instead of copying immediately.")
+        self.dry_run_check.stateChanged.connect(self._on_dry_run_toggled)
+        dry_row.addWidget(self.dry_run_check)
+        dry_row.addStretch(1)
+        root.addLayout(dry_row)
+        # The undo button is only useful once a batch has been recorded.
+        self.undo_btn.setEnabled(rename_history.peek_last_batch() is not None)
 
         # --- filter / search box ---
         filter_row = QHBoxLayout()
@@ -164,6 +202,17 @@ class IdentifyInterface(QWidget):
         self.count_label = BodyLabel("0 items")
         filter_row.addWidget(self.count_label)
         root.addLayout(filter_row)
+
+        # --- status filter tabs (All / Rename / Correct / Review) ---
+        self.status_pivot = SegmentedWidget()
+        for key in STATUS_TABS:
+            self.status_pivot.addItem(routeKey=key, text=key)
+        self.status_pivot.setCurrentItem(self._status_filter)
+        self.status_pivot.currentItemChanged.connect(self._on_status_filter_changed)
+        seg_row = QHBoxLayout()
+        seg_row.addWidget(self.status_pivot)
+        seg_row.addStretch(1)
+        root.addLayout(seg_row)
 
         # --- status colour legend ---
         root.addLayout(self._build_legend())
@@ -194,7 +243,59 @@ class IdentifyInterface(QWidget):
         }
         for col, w in widths.items():
             self.table.setColumnWidth(col, w)
+        # Restore any column widths the user saved in a previous session, then
+        # start listening for further resizes (debounced back to config).
+        self._restore_column_widths()
+        hdr.sectionResized.connect(self._on_section_resized)
+        # Click a header to sort by that column (rebuilds rows so the cell
+        # widgets - pills, buttons - move with their data). The checkbox and
+        # notes-icon columns are not meaningfully sortable.
+        hdr.setSortIndicatorShown(True)
+        hdr.sectionClicked.connect(self._on_header_clicked)
+        if 0 <= self._sort_col < len(self.COLS):
+            order = (Qt.DescendingOrder if self._sort_order else Qt.AscendingOrder)
+            hdr.setSortIndicator(self._sort_col, order)
         root.addWidget(self.table, 1)
+        # Setup done: allow the resize handler to persist future changes.
+        self._restoring_layout = False
+
+    # ----- identify-page config helpers -----
+    def _ident_get(self, key: str, default=None):
+        """Read one value from the nested ``identify_page`` config section."""
+        section = self.cfg.get("identify_page", {}) or {}
+        return section.get(key, default)
+
+    def _ident_set(self, **kwargs) -> None:
+        """Merge values into the ``identify_page`` config section and save."""
+        section = dict(self.cfg.get("identify_page", {}) or {})
+        section.update(kwargs)
+        self.cfg.set("identify_page", section)
+        self.cfg.save()
+
+    # ----- table layout persistence -----
+    def _restore_column_widths(self) -> None:
+        """Apply any column widths saved in a previous session."""
+        saved = self._ident_get("column_widths", {}) or {}
+        for col_str, width in saved.items():
+            try:
+                col, w = int(col_str), int(width)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= col < self.table.columnCount() and w > 0:
+                self.table.setColumnWidth(col, w)
+
+    def _on_section_resized(self, *args) -> None:
+        """A column was resized: schedule a debounced save (ignored during
+        the initial programmatic setup)."""
+        if self._restoring_layout:
+            return
+        self._width_save_timer.start()
+
+    def _persist_column_widths(self) -> None:
+        """Write the current column widths to config."""
+        widths = {str(col): int(self.table.columnWidth(col))
+                  for col in range(self.table.columnCount())}
+        self._ident_set(column_widths=widths)
 
     # ----- pickers -----
     def _pick_folder(self):
@@ -264,6 +365,7 @@ class IdentifyInterface(QWidget):
         self.table.setRowCount(0)
         self.results = []
         self._update_count()
+        self._update_status_counts()
         self.identify_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress.setVisible(True)
@@ -307,21 +409,79 @@ class IdentifyInterface(QWidget):
         if hasattr(settings, "_start_model_download"):
             settings._start_model_download()
 
+    @staticmethod
+    def _status_category(r: FileResult) -> str:
+        """Bucket a result into one of Rename / Correct / Review.
+
+        Mirrors :meth:`_row_appearance`: a low-confidence or unknown result is
+        Review, an already-correct name is Correct, everything else is Rename.
+        """
+        status = r.name_status or "unknown"
+        if r.needs_review or status == "unknown":
+            return "Review"
+        if status == "correct":
+            return "Correct"
+        return "Rename"
+
+    def _row_matches_status(self, row: int) -> bool:
+        """True when the result behind ``row`` belongs to the active status tab."""
+        if self._status_filter == "All":
+            return True
+        chk = self.table.item(row, self.C_CHECK)
+        if chk is None:
+            return True
+        idx = chk.data(Qt.UserRole)
+        if idx is None or idx >= len(self.results):
+            return True
+        return self._status_category(self.results[idx]) == self._status_filter
+
     def _filter_results(self, text: str = ""):
-        """Hide result rows that do not match the filter text (matched against
-        the file name, episode id, episode title and suggested name)."""
-        q = (text if text is not None else self.filter_edit.text()).strip().lower()
+        """Public slot for the search box; delegates to the combined filter."""
+        self._apply_filters()
+
+    def _on_status_filter_changed(self, key: str):
+        """A status tab was clicked: remember it, persist it, re-filter."""
+        self._status_filter = key if key in STATUS_TABS else "All"
+        self._ident_set(status_filter=self._status_filter)
+        self._apply_filters()
+
+    def _apply_filters(self):
+        """Hide rows that fail either the text search or the status tab.
+
+        The text query is matched against the file name, episode id, episode
+        title and suggested name; the status tab restricts to one naming
+        category. A row is visible only when it passes both.
+        """
+        q = self.filter_edit.text().strip().lower()
         for row in range(self.table.rowCount()):
-            if not q:
-                self.table.setRowHidden(row, False)
-                continue
-            hay = []
-            for col in (self.C_FILE, self.C_EPISODE, self.C_TITLE, self.C_SUGGESTED):
-                it = self.table.item(row, col)
-                if it is not None:
-                    hay.append(it.text().lower())
-            self.table.setRowHidden(row, q not in " ".join(hay))
+            visible = self._row_matches_status(row)
+            if visible and q:
+                hay = []
+                for col in (self.C_FILE, self.C_EPISODE,
+                            self.C_TITLE, self.C_SUGGESTED):
+                    it = self.table.item(row, col)
+                    if it is not None:
+                        hay.append(it.text().lower())
+                visible = q in " ".join(hay)
+            self.table.setRowHidden(row, not visible)
         self._update_count()
+
+    def _update_status_counts(self):
+        """Refresh the per-status counts shown on the filter tabs."""
+        counts = {"Rename": 0, "Correct": 0, "Review": 0}
+        for r in self.results:
+            counts[self._status_category(r)] += 1
+        total = len(self.results)
+        labels = {
+            "All": f"All ({total})",
+            "Rename": f"Rename ({counts['Rename']})",
+            "Correct": f"Correct ({counts['Correct']})",
+            "Review": f"Review ({counts['Review']})",
+        }
+        for key, text in labels.items():
+            item = self.status_pivot.widget(key)
+            if item is not None:
+                item.setText(text)
 
     def _update_count(self):
         """Refresh the entry tally. Shows the visible/total split while a filter
@@ -487,7 +647,18 @@ class IdentifyInterface(QWidget):
                                      ignore_part_format=ignore_pf)
 
     def _add_row(self, r: FileResult):
+        """Append a freshly identified result and render it as a new row."""
         self.results.append(r)
+        self._render_row(r, len(self.results) - 1)
+        self._update_status_counts()
+        # Re-apply the current filter so newly added rows respect it.
+        self._apply_filters()
+
+    def _render_row(self, r: FileResult, idx: int,
+                    checked: Optional[bool] = None):
+        """Render result ``r`` (at position ``idx`` in ``self.results``) as a new
+        table row. When ``checked`` is None the auto-check heuristic is used;
+        otherwise the given check state is restored (used when rebuilding)."""
         row = self.table.rowCount()
         self.table.insertRow(row)
         data = r.to_row()
@@ -499,8 +670,9 @@ class IdentifyInterface(QWidget):
         # checkbox column (stores the result index in UserRole)
         chk = QTableWidgetItem()
         chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-        chk.setCheckState(Qt.Checked if appear.auto_check else Qt.Unchecked)
-        chk.setData(Qt.UserRole, len(self.results) - 1)
+        want = appear.auto_check if checked is None else checked
+        chk.setCheckState(Qt.Checked if want else Qt.Unchecked)
+        chk.setData(Qt.UserRole, idx)
         self.table.setItem(row, self.C_CHECK, chk)
 
         # For correctly-named files the suggested name equals the current name;
@@ -551,11 +723,69 @@ class IdentifyInterface(QWidget):
         self.table.setCellWidget(row, self.C_NOTES,
                                  self._make_notes_button(data["filename"], notes))
 
-        # Re-apply the current filter so newly added rows respect it.
-        if self.filter_edit.text().strip():
-            self._filter_results(self.filter_edit.text())
+    # ----- sorting (rebuilds rows so cell widgets follow their data) -----
+    def _on_header_clicked(self, col: int):
+        """Sort by the clicked column, toggling direction on repeat clicks.
+
+        The checkbox and notes-icon columns carry no sortable data, so clicking
+        them is ignored.
+        """
+        if col in (self.C_CHECK, self.C_NOTES) or not self.results:
+            return
+        if col == self._sort_col:
+            self._sort_order = 0 if self._sort_order else 1
         else:
-            self._update_count()
+            self._sort_col = col
+            self._sort_order = 0
+        order = Qt.DescendingOrder if self._sort_order else Qt.AscendingOrder
+        self.table.horizontalHeader().setSortIndicator(col, order)
+        self._ident_set(sort_col=self._sort_col, sort_order=self._sort_order)
+        self._apply_sort()
+        self._rebuild_table()
+
+    def _sort_key(self, r: FileResult):
+        """Sort key for the active sort column."""
+        data = r.to_row()
+        col = self._sort_col
+        if col == self.C_FILE:
+            return data["filename"].lower()
+        if col == self.C_STATUS:
+            return self._status_category(r)
+        if col == self.C_EPISODE:
+            g = r.guess
+            return (g.season if g and g.season is not None else -1,
+                    g.episode if g and g.episode is not None else -1)
+        if col == self.C_TITLE:
+            return (data.get("episode_title") or "").lower()
+        if col == self.C_SUGGESTED:
+            return (data.get("suggested_filename") or "").lower()
+        if col == self.C_MATCH:
+            return float(data.get("confidence") or 0.0)
+        if col == self.C_AGREE:
+            g = r.guess
+            return (g.votes / g.total_samples) if g and g.total_samples else 0.0
+        return data["filename"].lower()
+
+    def _apply_sort(self):
+        """Reorder ``self.results`` in place per the active sort state."""
+        if not (0 <= self._sort_col < len(self.COLS)):
+            return
+        self.results.sort(key=self._sort_key,
+                          reverse=bool(self._sort_order))
+
+    def _rebuild_table(self):
+        """Clear and re-render every row from ``self.results``.
+
+        Used after a sort so the cell widgets (confidence pill, notes button)
+        move with their data. The per-result checked state is preserved by
+        result identity across the rebuild.
+        """
+        checked = {id(r) for r in self._checked_results()}
+        self.table.setRowCount(0)
+        for idx, r in enumerate(self.results):
+            self._render_row(r, idx, checked=(id(r) in checked))
+        self._update_status_counts()
+        self._apply_filters()
 
     def _teardown_run(self):
         self.identify_btn.setEnabled(True)
@@ -568,6 +798,10 @@ class IdentifyInterface(QWidget):
 
     def _on_ok(self, total: int, review: int):
         self._teardown_run()
+        # Apply the saved sort order now that every row is in.
+        if 0 <= self._sort_col < len(self.COLS) and self.results:
+            self._apply_sort()
+            self._rebuild_table()
         ok = total - review
         InfoBar.success(
             "Done", f"{ok}/{total} identified confidently; {review} need review.",
@@ -617,46 +851,99 @@ class IdentifyInterface(QWidget):
                     picked.append(self.results[idx])
         return picked
 
-    def _rename_plex(self):
+    def _on_dry_run_toggled(self, _state=None):
+        """Persist the always-preview preference."""
+        self._ident_set(dry_run_preview=bool(self.dry_run_check.isChecked()))
+
+    def _collect_renamable(self) -> Optional[List[FileResult]]:
+        """Return the checked results that have season/episode info, or None
+        after surfacing the appropriate error."""
         if not self._has_results():
-            return
+            return None
         picked = self._checked_results()
         if not picked:
             self._error("Nothing selected",
                         "Tick the checkbox next to the files you want to copy.")
-            return
+            return None
         renamable = [r for r in picked if r.guess and r.guess.season is not None
                      and r.guess.episode is not None]
         if not renamable:
             self._error("No episode info",
                         "The selected files have no season/episode to rename by.")
+            return None
+        return renamable
+
+    def _plan_for(self, r: FileResult, dest: str) -> dict:
+        """Compute the source -> destination mapping for one result."""
+        g = r.guess
+        show = self._safe(g.title or "Show")
+        season_dir = os.path.join(dest, show, f"Season {g.season:02d}")
+        ext = os.path.splitext(r.path)[1]
+        # Prefer the DB-correct name (includes the episode title) so Plex gets a
+        # fully-titled file; fall back to a bare SxxEyy name if unknown.
+        newname = r.suggested_filename or (
+            f"{show} - {episode_id_str(g.season, g.episode)}{ext}")
+        newname = self._safe(os.path.splitext(newname)[0]) + ext
+        return {"src": r.path, "dest": os.path.join(season_dir, newname),
+                "season_dir": season_dir, "filename": r.filename,
+                "newname": newname}
+
+    def _build_rename_plan(self, renamable: List[FileResult],
+                           dest: str) -> List[dict]:
+        """Build the full before -> after plan for a set of results."""
+        return [self._plan_for(r, dest) for r in renamable]
+
+    def _preview_renames(self):
+        """Show the before/after plan without copying anything (dry run)."""
+        renamable = self._collect_renamable()
+        if renamable is None:
+            return
+        dest = QFileDialog.getExistingDirectory(
+            self, "Choose destination to preview renames",
+            self.cfg.get("last_rename_dest", ""))
+        if not dest:
+            return
+        plan = self._build_rename_plan(renamable, dest)
+        dlg = RenamePreviewDialog(plan, dest, self.window())
+        if dlg.exec():
+            self._execute_rename_plan(plan, dest)
+
+    def _rename_plex(self):
+        """Copy checked files into a Plex layout, previewing first when the
+        dry-run preference is on."""
+        renamable = self._collect_renamable()
+        if renamable is None:
             return
         dest = QFileDialog.getExistingDirectory(
             self, "Choose destination for renamed copies",
             self.cfg.get("last_rename_dest", ""))
         if not dest:
             return
+        plan = self._build_rename_plan(renamable, dest)
+        if self.dry_run_check.isChecked():
+            dlg = RenamePreviewDialog(plan, dest, self.window())
+            if not dlg.exec():
+                return
+        self._execute_rename_plan(plan, dest)
+
+    def _execute_rename_plan(self, plan: List[dict], dest: str):
+        """Perform the copies described by ``plan`` and record them for undo."""
         self.cfg.update(last_rename_dest=dest)
         self.cfg.save()
-
-        done, errors = 0, []
-        for r in renamable:
-            g = r.guess
-            show = self._safe(g.title or "Show")
-            season_dir = os.path.join(dest, show, f"Season {g.season:02d}")
-            os.makedirs(season_dir, exist_ok=True)
-            ext = os.path.splitext(r.path)[1]
-            # Prefer the DB-correct name (includes the episode title) so Plex
-            # gets a fully-titled file; fall back to bare SxxEyy if unknown.
-            newname = r.suggested_filename or (
-                f"{show} - {episode_id_str(g.season, g.episode)}{ext}")
-            newname = self._safe(os.path.splitext(newname)[0]) + ext
+        done, errors, ops = 0, [], []
+        for item in plan:
             try:
-                shutil.copy2(r.path, os.path.join(season_dir, newname))
+                os.makedirs(item["season_dir"], exist_ok=True)
+                shutil.copy2(item["src"], item["dest"])
                 done += 1
-                logging.info("copied -> %s", os.path.join(season_dir, newname))
+                ops.append({"src": item["src"], "dest": item["dest"]})
+                logging.info("copied -> %s", item["dest"])
             except Exception as exc:
-                errors.append(f"{r.filename}: {exc}")
+                errors.append(f"{item['filename']}: {exc}")
+        # Record the batch so it can be undone later.
+        if ops:
+            rename_history.record_batch(ops, destination=dest)
+            self.undo_btn.setEnabled(True)
         if errors:
             self._error("Copied with errors",
                         f"Copied {done} file(s).\n" + "\n".join(errors[:6]))
@@ -664,6 +951,74 @@ class IdentifyInterface(QWidget):
             InfoBar.success("Renamed for Plex",
                             f"Copied {done} file(s) into a Plex layout under {dest}.",
                             duration=6000, position=InfoBarPosition.TOP, parent=self)
+
+    def _undo_last_rename(self):
+        """Reverse the most recent rename batch (deletes the copied files)."""
+        batch = rename_history.peek_last_batch()
+        if not batch:
+            InfoBar.warning("Nothing to undo", "No rename batch on record.",
+                            duration=4000, position=InfoBarPosition.TOP, parent=self)
+            self.undo_btn.setEnabled(False)
+            return
+        ops = batch.get("operations", [])
+        present = [o for o in ops if o.get("dest") and os.path.exists(o["dest"])]
+        missing = len(ops) - len(present)
+        when = batch.get("timestamp", "the last batch")
+        sample = "\n".join(os.path.basename(o["dest"]) for o in present[:8])
+        more = "" if len(present) <= 8 else f"\n...and {len(present) - 8} more"
+        if not present:
+            InfoBar.warning(
+                "Nothing to remove",
+                "None of the files from the last batch still exist.",
+                duration=5000, position=InfoBarPosition.TOP, parent=self)
+            rename_history.remove_last_batch()
+            self.undo_btn.setEnabled(rename_history.peek_last_batch() is not None)
+            return
+        note = (f"\n\n{missing} file(s) are already gone and will be skipped."
+                if missing else "")
+        box = MessageBox(
+            "Undo last rename",
+            f"This will delete {len(present)} copied file(s) from the batch made "
+            f"on {when}:\n\n{sample}{more}{note}\n\nThe original source files are "
+            "not touched.",
+            self.window())
+        box.yesButton.setText("Delete copies")
+        box.cancelButton.setText("Keep them")
+        if not box.exec():
+            return
+        removed, errors = 0, []
+        for o in present:
+            try:
+                os.remove(o["dest"])
+                removed += 1
+                # Tidy up now-empty Season / Show folders left behind.
+                self._prune_empty_dirs(os.path.dirname(o["dest"]),
+                                       o.get("dest", ""))
+            except Exception as exc:
+                errors.append(f"{os.path.basename(o['dest'])}: {exc}")
+        rename_history.remove_last_batch()
+        self.undo_btn.setEnabled(rename_history.peek_last_batch() is not None)
+        if errors:
+            self._error("Undo finished with errors",
+                        f"Removed {removed} file(s).\n" + "\n".join(errors[:6]))
+        else:
+            InfoBar.success("Undo complete",
+                            f"Removed {removed} copied file(s).",
+                            duration=5000, position=InfoBarPosition.TOP, parent=self)
+
+    @staticmethod
+    def _prune_empty_dirs(start_dir: str, _dest: str):
+        """Remove ``start_dir`` and its now-empty parent (Season then Show) if
+        they are empty. Never raises and never climbs above two levels."""
+        for _ in range(2):
+            try:
+                if os.path.isdir(start_dir) and not os.listdir(start_dir):
+                    os.rmdir(start_dir)
+                    start_dir = os.path.dirname(start_dir)
+                else:
+                    break
+            except OSError:
+                break
 
     @staticmethod
     def _safe(name: str) -> str:
@@ -681,3 +1036,40 @@ class IdentifyInterface(QWidget):
     def _error(self, title: str, msg: str):
         InfoBar.error(title, msg, duration=7000,
                       position=InfoBarPosition.TOP, parent=self)
+
+
+class RenamePreviewDialog(MessageBoxBase):
+    """A dry-run dialog listing every planned before -> after copy.
+
+    Purely informational: it copies nothing itself. It returns accepted
+    (``exec()`` truthy) when the user chooses to proceed, so the caller can then
+    perform the copies, or rejected when they cancel.
+    """
+
+    def __init__(self, plan: List[dict], dest: str, parent=None):
+        super().__init__(parent)
+        self.titleLabel = SubtitleLabel(
+            f"Preview: {len(plan)} file(s) to copy", self)
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(CaptionLabel(
+            f"Nothing is copied until you confirm. Destination root: {dest}",
+            self))
+
+        view = TextEdit(self)
+        view.setReadOnly(True)
+        view.setLineWrapMode(TextEdit.NoWrap)
+        lines = []
+        for item in plan:
+            rel = os.path.relpath(item["dest"], dest)
+            marker = "  (overwrites existing)" if os.path.exists(
+                item["dest"]) else ""
+            lines.append(f"{item['filename']}\n    ->  {rel}{marker}\n")
+        view.setPlainText("\n".join(lines) if lines else "Nothing to copy.")
+        view.setMinimumSize(680, 380)
+        self.viewLayout.addWidget(view)
+
+        self.yesButton.setText("Proceed with copy")
+        self.cancelButton.setText("Cancel")
+        self.widget.setMinimumWidth(720)
+        # Nothing to do if the plan is empty.
+        self.yesButton.setEnabled(bool(plan))

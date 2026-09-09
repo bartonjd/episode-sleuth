@@ -40,6 +40,15 @@ DEFAULTS: Dict[str, Any] = {
     "last_show_title": "",      # last TV show used for batch library import
     "theme": "Dark",            # "Dark" | "Light" | "Auto"
     "theme_color": "#0078d4",   # Windows 11 accent blue
+    # Identify-page UI state (status filter, table layout, dry-run preference).
+    # Nested so all Identify-page persistence lives under one key.
+    "identify_page": {
+        "status_filter": "All",     # All | Rename | Correct | Review
+        "dry_run_preview": False,   # always show a preview before renaming
+        "column_widths": {},        # {column_index_str: width_px}
+        "sort_col": -1,             # -1 = unsorted (input order)
+        "sort_order": 0,            # 0 = ascending, 1 = descending
+    },
 }
 
 
