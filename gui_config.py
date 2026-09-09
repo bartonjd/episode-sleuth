@@ -43,6 +43,11 @@ DEFAULTS: Dict[str, Any] = {
     # Global view preferences (apply to the Identify page layout).
     "view_density": "Standard",  # Compact | Standard | Comfortable
     "view_mode": "Advanced",     # Simple | Advanced
+    # Main-window geometry (size + position), stored as a base64 string
+    # produced by QMainWindow.saveGeometry(); "" means use the default size.
+    "window_geometry": "",
+    # Identify-page vertical splitter sizes [top_px, table_px]; [] = default.
+    "identify_splitter": [],
     # Identify-page UI state (status filter, table layout, dry-run preference).
     # Nested so all Identify-page persistence lives under one key.
     "identify_page": {

@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -53,7 +53,12 @@ class MainWindow(FluentWindow):
         self.apply_theme(self.gui_cfg.get("theme", "Dark"))
         setThemeColor(self.gui_cfg.get("theme_color", "#0078d4"))
 
-        self.resize(1080, 760)
+        # Never let the window shrink to an unusable size on small screens.
+        self.setMinimumSize(800, 600)
+        # Restore the last saved geometry (size + position) if we have one,
+        # otherwise fall back to a sensible default size.
+        if not self._restore_geometry():
+            self.resize(1080, 760)
         self.setWindowTitle(APP_TITLE)
         # Prefer the bundled custom icon; fall back to a Fluent icon if missing.
         try:
@@ -127,7 +132,33 @@ class MainWindow(FluentWindow):
                 return
         self._current_iface = new_widget
 
+    def _restore_geometry(self) -> bool:
+        """Restore the saved window geometry. Returns True if one was applied."""
+        saved = self.gui_cfg.get("window_geometry", "")
+        if not saved:
+            return False
+        try:
+            data = QByteArray.fromBase64(saved.encode("ascii"))
+            return bool(self.restoreGeometry(data))
+        except Exception:
+            return False
+
+    def _save_geometry(self) -> None:
+        """Persist the current window geometry (size + position) to config."""
+        try:
+            encoded = bytes(self.saveGeometry().toBase64()).decode("ascii")
+            self.gui_cfg.set("window_geometry", encoded)
+            self.gui_cfg.save()
+        except Exception:
+            pass
+
     def closeEvent(self, event):
+        # Remember where and how big the window was for next launch.
+        self._save_geometry()
+        # Persist the Identify page's splitter position too, if available.
+        identify = getattr(self, "identify_interface", None)
+        if identify is not None and hasattr(identify, "save_splitter_state"):
+            identify.save_splitter_state()
         # If a model download is still running, cancel it and let the thread
         # unwind cleanly so we never tear down a live QThread on exit.
         worker = getattr(self.settings_interface, "_dl_worker", None)

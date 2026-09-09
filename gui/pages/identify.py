@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QSizePolicy,
+    QSplitter,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -88,7 +89,7 @@ from ..constants import (
     PILL_LOW,
     PILL_MED,
 )
-from ..widgets import Card, CollapsibleCard, _path_row
+from ..widgets import Card, CollapsibleCard, FlowWidget, _path_row
 from ..workers import IdentifyWorker
 
 # Order of the status filter tabs and the categories they map to.
@@ -156,16 +157,34 @@ class IdentifyInterface(QWidget):
         self._width_save_timer.setInterval(400)
         self._width_save_timer.timeout.connect(self._persist_column_widths)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 24, 28, 24)
-        root.setSpacing(16)
-        self.root = root
+        # Outer layout holds only the fixed header and the splitter; page
+        # margins are applied here. The scrollable "top" controls live in
+        # ``top_layout`` inside the splitter's upper pane.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(12)
+        self.root = outer
 
         self.header_label = TitleLabel("Identify episodes")
-        root.addWidget(self.header_label)
-        root.addWidget(CaptionLabel(
+        outer.addWidget(self.header_label)
+        outer.addWidget(CaptionLabel(
             "Point at a folder of DVD rips and match each file to its episode. "
             "The reference database is set on the Settings page."))
+
+        # A vertical splitter lets the user trade space between the controls
+        # (top pane) and the results table (bottom pane): drag the handle to
+        # minimise the options area and maximise the results, or vice versa.
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(8)
+
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(16)
+        self.top_layout = top_layout
+        # Subsequent controls are added to the splitter's top pane.
+        root = top_layout
 
         # --- source card ---
         self.src_card = src_card = Card("DVD rips to identify")
@@ -214,25 +233,12 @@ class IdentifyInterface(QWidget):
         opt_card.addLayout(grid)
         root.addWidget(opt_card)
 
-        # --- action bar ---
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
+        # --- action bar (adaptive: horizontal when wide, stacked when narrow) ---
         self.identify_btn = PrimaryPushButton("Identify", self, FIF.SEARCH)
         self.identify_btn.clicked.connect(self._start)
         self.cancel_btn = PushButton("Cancel", self, FIF.CANCEL)
         self.cancel_btn.clicked.connect(self._cancel)
         self.cancel_btn.setEnabled(False)
-        self.progress = ProgressBar()
-        self.progress.setVisible(False)
-        self.progress.setFixedHeight(6)
-        self.progress_pct = CaptionLabel("0%")
-        self.progress_pct.setVisible(False)
-        self.progress_pct.setFixedWidth(38)
-        actions.addWidget(self.identify_btn)
-        actions.addWidget(self.cancel_btn)
-        actions.addWidget(self.progress, 1)
-        actions.addWidget(self.progress_pct)
-
         self.preview_btn = PushButton("Preview Renames", self, FIF.VIEW)
         self.rename_btn = PushButton("Rename for Plex", self, FIF.EDIT)
         self.undo_btn = PushButton("Undo Last Rename", self, FIF.CANCEL)
@@ -250,13 +256,36 @@ class IdentifyInterface(QWidget):
         self.customize_btn.setToolTip(
             "Choose which optional panels are shown on this page")
         self.customize_btn.clicked.connect(self._open_customize_view)
-        actions.addWidget(self.preview_btn)
-        actions.addWidget(self.rename_btn)
-        actions.addWidget(self.undo_btn)
-        actions.addWidget(self.export_json_btn)
-        actions.addWidget(self.export_csv_btn)
-        actions.addWidget(self.customize_btn)
-        root.addLayout(actions)
+
+        # All action buttons live in a FlowLayout that wraps them onto
+        # additional rows as the window narrows (single row when wide,
+        # eventually one-per-line when very narrow). A FlowLayout's minimum
+        # width is only one button wide, so the window can shrink to 800px
+        # without the buttons forcing a larger minimum.
+        self._action_buttons = [
+            self.identify_btn, self.cancel_btn, self.preview_btn,
+            self.rename_btn, self.undo_btn, self.export_json_btn,
+            self.export_csv_btn, self.customize_btn,
+        ]
+        self.actions_widget = FlowWidget(margin=0, spacing=10)
+        self.actions_layout = self.actions_widget.flow
+        for btn in self._action_buttons:
+            self.actions_widget.addWidget(btn)
+        root.addWidget(self.actions_widget)
+
+        # --- progress row (kept on its own line so it is never clipped) ---
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(8)
+        self.progress = ProgressBar()
+        self.progress.setVisible(False)
+        self.progress.setFixedHeight(6)
+        self.progress.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.progress_pct = CaptionLabel("0%")
+        self.progress_pct.setVisible(False)
+        self.progress_pct.setFixedWidth(38)
+        progress_row.addWidget(self.progress, 1)
+        progress_row.addWidget(self.progress_pct)
+        root.addLayout(progress_row)
 
         # --- dry-run preference (wrapped so it can be hidden by view mode) ---
         self.dry_row_widget = QWidget()
@@ -355,7 +384,20 @@ class IdentifyInterface(QWidget):
         if 0 <= self._sort_col < len(self.COLS):
             order = (Qt.DescendingOrder if self._sort_order else Qt.AscendingOrder)
             hdr.setSortIndicator(self._sort_col, order)
-        root.addWidget(self.table, 1)
+
+        # Assemble the splitter: controls on top, results table below. The
+        # table pane gets the stretch so it grows first when the window does.
+        self.splitter.addWidget(top_widget)
+        self.splitter.addWidget(self.table)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        # The top pane hugs its content height; the table pane expands.
+        top_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        outer.addWidget(self.splitter, 1)
+        # Restore any saved splitter position, then persist future drags.
+        self._restore_splitter_state()
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+
         # Setup done: allow the resize handler to persist future changes.
         self._restoring_layout = False
 
@@ -399,6 +441,9 @@ class IdentifyInterface(QWidget):
         # -- density: page spacing --
         self.root.setContentsMargins(*spec["root_margin"])
         self.root.setSpacing(spec["root_spacing"])
+        # The controls live inside the splitter's top pane, so their inter-row
+        # spacing is driven by top_layout rather than the outer layout.
+        self.top_layout.setSpacing(spec["root_spacing"])
         for card in (self.src_card, self.opt_card):
             card.set_density(spec["card_margin"], spec["card_spacing"])
 
@@ -431,6 +476,33 @@ class IdentifyInterface(QWidget):
         if dlg.exec():
             self._ident_set(custom_panels=dlg.selected_panels())
             self.apply_view_preferences()
+
+    # ----- splitter persistence -----
+    def _restore_splitter_state(self) -> None:
+        """Apply the saved splitter pane sizes, if any are stored."""
+        sizes = self.cfg.get("identify_splitter", []) or []
+        try:
+            sizes = [int(s) for s in sizes]
+        except (TypeError, ValueError):
+            sizes = []
+        if len(sizes) == 2 and all(s > 0 for s in sizes):
+            self.splitter.setSizes(sizes)
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        """Persist the splitter position after the user drags the handle."""
+        if self._restoring_layout:
+            return
+        self.save_splitter_state()
+
+    def save_splitter_state(self) -> None:
+        """Write the current splitter pane sizes to config."""
+        try:
+            sizes = [int(s) for s in self.splitter.sizes()]
+        except Exception:
+            return
+        if len(sizes) == 2 and all(s >= 0 for s in sizes):
+            self.cfg.set("identify_splitter", sizes)
+            self.cfg.save()
 
     # ----- table layout persistence -----
     def _restore_column_widths(self) -> None:
