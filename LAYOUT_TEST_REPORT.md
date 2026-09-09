@@ -92,3 +92,95 @@ wrapping instead of overflowing on narrow windows, the window honours an
 `gui_config.json` (`window_geometry`) using `QMainWindow.saveGeometry()` /
 `restoreGeometry()`. The identify splitter position is likewise persisted
 (`identify_splitter`).
+
+
+
+---
+
+# Results Table and Dialog Improvements (Items 4 & 5)
+
+**Date:** 2026-09-09
+
+## Navigation icon fix
+
+"Build library" and "Manage library" previously used two book-style icons
+(`FIF.LIBRARY` and `FIF.BOOK_SHELF`) that render almost identically. "Build
+library" now uses `FIF.ADD` (a plus icon, signalling "create"), while "Manage
+library" keeps `FIF.BOOK_SHELF`. The two entries are now visually distinct
+(see `test_screenshots/table_wide_1500.png` - the left navigation shows a
+magnifier, a plus, and a book).
+
+## How these results were produced
+
+Same method as above: real widgets exercised under Qt's `offscreen` platform
+with a 2560x1440 virtual screen, captured with `QWidget.grab()`. Automated
+assertions live in `tools/table_dialog_test.py`; demonstration screenshots are
+produced by `tools/table_shots.py`. These are rendered frames, not an
+interactive click session; the header right-click menu and drag-to-reorder are
+verified programmatically (menu construction, `moveSection`, persistence
+round-trip) rather than by simulating mouse gestures.
+
+Reproduce with:
+
+```
+QT_QPA_PLATFORM="offscreen:configfile=tools/offscreen.json" python tools/table_dialog_test.py
+QT_QPA_PLATFORM="offscreen:configfile=tools/offscreen.json" python tools/table_shots.py
+```
+
+## Item 4 - results table (30 automated checks, all PASS)
+
+| Area | Result |
+|------|--------|
+| Long text elides with "..." (`ElideRight`, word-wrap off) | PASS |
+| Every text cell has a tooltip carrying its full value | PASS |
+| Horizontal + vertical scrolling is per-pixel (smooth) | PASS |
+| Column headers are drag-to-reorder (`setSectionsMovable`) | PASS |
+| Header right-click menu has a checkable entry per column | PASS |
+| Column priority defined (Status > Episode > Match% > File > Title > Suggested > Agree) | PASS |
+| Auto-hide: nothing hidden >= 1000px; more hidden as width shrinks | PASS |
+| Essential columns (Select, Status, Episode, Match%, Notes) never auto-hidden or user-hidden | PASS |
+| Widening restores auto-hidden columns | PASS |
+| User show/hide choice persists (`column_hidden`) | PASS |
+| Column order persists and restores in a new session (`column_order`) | PASS |
+
+Auto-hide thresholds (table viewport width): `< 1000px` hides Samples Agree;
+`< 900px` also hides Suggested Name; `< 780px` also hides Episode Title;
+`< 640px` also hides File. Essentials always remain, and a horizontal
+scrollbar covers anything that still does not fit.
+
+Screenshots:
+- `test_screenshots/table_wide_1500.png` - all columns visible at 1500px.
+- `test_screenshots/table_1366x768.png` - 1366x768 target, all columns fit,
+  long Episode Title / Suggested Name cells show the ellipsis.
+- `test_screenshots/table_narrow_860.png` - at 860px, Episode Title, Suggested
+  Name and Samples Agree are auto-hidden; Status text elides ("Rena...").
+
+## Item 5 - dialogs (Preview Renames, Customize View)
+
+| Check | Result |
+|-------|--------|
+| Preview dialog height capped at 80% of screen | PASS |
+| Preview dialog file list scrolls; button row fixed at bottom | PASS |
+| Preview dialog buttons wrap via FlowLayout on narrow windows | PASS |
+| Preview dialog min width clamped to fit small screens | PASS |
+| Customize dialog content wrapped in a `QScrollArea` | PASS |
+| Customize dialog height capped at 80%; buttons in FlowLayout | PASS |
+| Customize dialog still reports checkbox selections correctly | PASS |
+
+Screenshot: `test_screenshots/dialog_preview_renames.png` - a 60-item preview
+list scrolling with the Cancel / Proceed with copy buttons fixed at the bottom
+(captured mid fade-in, hence the light appearance).
+
+## Persistence keys added to `gui_config.json` (under `identify_page`)
+
+- `column_order` - list of logical column indices in the user's chosen order.
+- `column_hidden` - list of logical column indices the user chose to hide.
+
+(`column_widths`, `sort_col`, `sort_order`, `status_filter` were already
+persisted.)
+
+## Summary
+
+All 30 table/dialog automated checks pass, plus the full application suite
+(80 passed, 1 skipped) and `ruff` remain clean. The duplicate navigation icon
+is resolved.

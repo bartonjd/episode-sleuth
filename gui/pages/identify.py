@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QTableWidgetItem,
@@ -135,6 +137,16 @@ class IdentifyInterface(QWidget):
     # column indices (kept in one place so row population and filtering stay in sync)
     C_CHECK, C_FILE, C_STATUS, C_EPISODE, C_TITLE = 0, 1, 2, 3, 4
     C_SUGGESTED, C_MATCH, C_AGREE, C_NOTES = 5, 6, 7, 8
+
+    # Columns that stay visible no matter how narrow the window gets: the
+    # checkbox, the naming status, the episode id, the match confidence, and
+    # the notes-icon column. Auto-hide and the context menu never remove these.
+    ESSENTIAL_COLS = (C_CHECK, C_STATUS, C_EPISODE, C_MATCH, C_NOTES)
+    # Order in which the remaining (non-essential) columns are dropped as the
+    # table gets narrower - least important first. Priority overall, most to
+    # least important: Status > Episode > Match % > File > Episode Title >
+    # Suggested Name > Samples Agree.
+    AUTO_HIDE_SEQUENCE = (C_AGREE, C_SUGGESTED, C_TITLE, C_FILE)
 
     def __init__(self, window: "MainWindow"):
         super().__init__()
@@ -353,6 +365,12 @@ class IdentifyInterface(QWidget):
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        # Smooth per-pixel horizontal scrolling too, so columns that do not fit
+        # can be scrolled to without jumping a whole column at a time.
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        # Long cell text truncates with an ellipsis ("...") instead of being
+        # clipped; the full value is available via the per-cell tooltip.
+        self.table.setTextElideMode(Qt.ElideRight)
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # A clear tooltip explaining what "Samples Agree" means.
         agree_hdr = self.table.horizontalHeaderItem(self.C_AGREE)
@@ -372,10 +390,21 @@ class IdentifyInterface(QWidget):
         }
         for col, w in widths.items():
             self.table.setColumnWidth(col, w)
+        # Let the user drag column headers to reorder them; persist the order.
+        hdr.setSectionsMovable(True)
+        hdr.sectionMoved.connect(self._on_section_moved)
+        # Right-click the header for a checkbox menu to show/hide columns.
+        hdr.setContextMenuPolicy(Qt.CustomContextMenu)
+        hdr.customContextMenuRequested.connect(self._show_header_menu)
         # Restore any column widths the user saved in a previous session, then
         # start listening for further resizes (debounced back to config).
         self._restore_column_widths()
         hdr.sectionResized.connect(self._on_section_resized)
+        # Restore the saved column order and per-column show/hide preferences.
+        self._user_hidden: set = set()
+        self._auto_hidden: set = set()
+        self._restore_column_order()
+        self._restore_column_visibility()
         # Click a header to sort by that column (rebuilds rows so the cell
         # widgets - pills, buttons - move with their data). The checkbox and
         # notes-icon columns are not meaningfully sortable.
@@ -528,6 +557,119 @@ class IdentifyInterface(QWidget):
         widths = {str(col): int(self.table.columnWidth(col))
                   for col in range(self.table.columnCount())}
         self._ident_set(column_widths=widths)
+
+    # ----- column order (drag-to-reorder) persistence -----
+    def _restore_column_order(self) -> None:
+        """Reapply a column order saved in a previous session.
+
+        The saved value is the list of logical column indices in the order the
+        user last arranged them (left to right)."""
+        saved = self._ident_get("column_order", []) or []
+        if not isinstance(saved, list):
+            return
+        order = [int(c) for c in saved
+                 if isinstance(c, int) or str(c).lstrip("-").isdigit()]
+        # Only accept a complete, valid permutation of the columns.
+        if sorted(order) != list(range(self.table.columnCount())):
+            return
+        hdr = self.table.horizontalHeader()
+        self._restoring_layout = True
+        for target_visual, logical in enumerate(order):
+            current_visual = hdr.visualIndex(logical)
+            if current_visual != target_visual:
+                hdr.moveSection(current_visual, target_visual)
+        self._restoring_layout = False
+
+    def _on_section_moved(self, *args) -> None:
+        """A header section was dragged to a new position: persist the order."""
+        if self._restoring_layout:
+            return
+        hdr = self.table.horizontalHeader()
+        order = [hdr.logicalIndex(i) for i in range(self.table.columnCount())]
+        self._ident_set(column_order=order)
+
+    # ----- column visibility (auto-hide + right-click menu) persistence -----
+    def _restore_column_visibility(self) -> None:
+        """Load the user's saved show/hide choices and apply them (plus any
+        automatic hiding appropriate for the current width)."""
+        saved = self._ident_get("column_hidden", []) or []
+        if isinstance(saved, list):
+            self._user_hidden = {
+                int(c) for c in saved
+                if (isinstance(c, int) or str(c).lstrip("-").isdigit())
+                and int(c) not in self.ESSENTIAL_COLS
+                and 0 <= int(c) < self.table.columnCount()
+            }
+        self._update_auto_hidden()
+
+    def _apply_column_visibility(self) -> None:
+        """Hide a column when the user hid it OR the current width auto-hides
+        it; show it otherwise."""
+        for col in range(self.table.columnCount()):
+            hidden = col in self._user_hidden or col in self._auto_hidden
+            self.table.setColumnHidden(col, hidden)
+
+    def _auto_hide_count(self, width: int) -> int:
+        """How many of AUTO_HIDE_SEQUENCE to hide at the given table width."""
+        if width <= 0:
+            return 0
+        if width < 640:
+            return 4
+        if width < 780:
+            return 3
+        if width < 900:
+            return 2
+        if width < 1000:
+            return 1
+        return 0
+
+    def _update_auto_hidden(self) -> None:
+        """Recompute which columns are auto-hidden for the current width and
+        reapply visibility. Never auto-hides a column the user explicitly chose
+        to keep... it only ever hides non-essential columns."""
+        width = self.table.viewport().width() or self.width()
+        count = self._auto_hide_count(width)
+        self._auto_hidden = set(self.AUTO_HIDE_SEQUENCE[:count])
+        self._apply_column_visibility()
+
+    def resizeEvent(self, event):
+        """Re-evaluate automatic column hiding whenever the page is resized."""
+        super().resizeEvent(event)
+        if not self._restoring_layout:
+            self._update_auto_hidden()
+
+    def _toggle_column(self, col: int, visible: bool) -> None:
+        """Show or hide a single column from the header context menu and
+        persist the choice."""
+        if col in self.ESSENTIAL_COLS:
+            return
+        if visible:
+            self._user_hidden.discard(col)
+        else:
+            self._user_hidden.add(col)
+        self._apply_column_visibility()
+        self._ident_set(column_hidden=sorted(self._user_hidden))
+
+    def _show_header_menu(self, pos) -> None:
+        """Right-click header menu with a checkable entry per column so the
+        user can show or hide individual columns."""
+        menu = QMenu(self.table)
+        hdr = self.table.horizontalHeader()
+        # List entries in the current visual (left-to-right) order.
+        for visual in range(self.table.columnCount()):
+            col = hdr.logicalIndex(visual)
+            label = self.COLS[col].strip() or (
+                "Select" if col == self.C_CHECK else "Notes")
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(not self.table.isColumnHidden(col))
+            if col in self.ESSENTIAL_COLS:
+                # Essential columns cannot be hidden; show as checked+disabled.
+                act.setEnabled(False)
+            else:
+                act.toggled.connect(
+                    lambda checked, c=col: self._toggle_column(c, checked))
+        menu.exec(hdr.mapToGlobal(pos))
 
     # ----- pickers -----
     def _pick_folder(self):
@@ -812,12 +954,19 @@ class IdentifyInterface(QWidget):
     @staticmethod
     def _make_text_item(text: str, *, center: bool = False,
                         tooltip: Optional[str] = None) -> QTableWidgetItem:
-        """Build a plain, non-editable table cell."""
-        item = QTableWidgetItem(str(text))
+        """Build a plain, non-editable table cell.
+
+        When no explicit tooltip is given, the cell's full text is used as its
+        tooltip so values truncated with an ellipsis in a narrow column can
+        still be read in full on hover."""
+        text = str(text)
+        item = QTableWidgetItem(text)
         if center:
             item.setTextAlignment(Qt.AlignCenter)
         if tooltip:
             item.setToolTip(tooltip)
+        elif text.strip():
+            item.setToolTip(text)
         return item
 
     @staticmethod
@@ -1276,6 +1425,33 @@ class IdentifyInterface(QWidget):
                       position=InfoBarPosition.TOP, parent=self)
 
 
+def _cap_dialog_height(dialog) -> None:
+    """Cap a MessageBoxBase dialog to 80% of the available screen height so its
+    fixed bottom button row is always reachable on small screens."""
+    screen = dialog.screen() or QApplication.primaryScreen()
+    if screen is not None:
+        avail = screen.availableGeometry().height()
+        dialog.widget.setMaximumHeight(int(avail * 0.8))
+
+
+def _flow_dialog_buttons(dialog) -> None:
+    """Move a MessageBoxBase's Yes/Cancel buttons into a FlowLayout so they
+    wrap onto a second line instead of being clipped on very narrow windows.
+    The button row stays fixed at the bottom (outside the scrollable content)."""
+    layout = dialog.buttonLayout
+    for i in reversed(range(layout.count())):
+        it = layout.itemAt(i)
+        w = it.widget()
+        if w is not None:
+            layout.removeWidget(w)
+        else:
+            layout.removeItem(it)
+    flow = FlowWidget(margin=0, spacing=8)
+    flow.addWidget(dialog.cancelButton)
+    flow.addWidget(dialog.yesButton)
+    layout.addWidget(flow)
+
+
 class RenamePreviewDialog(MessageBoxBase):
     """A dry-run dialog listing every planned before -> after copy.
 
@@ -1313,13 +1489,18 @@ class RenamePreviewDialog(MessageBoxBase):
 
         self.yesButton.setText("Proceed with copy")
         self.cancelButton.setText("Cancel")
-        self.widget.setMinimumWidth(720)
+        # Prefer a roomy 720px, but never demand more width than a small screen
+        # can give (keeps the dialog fully on-screen at 1366x768 and below).
+        screen = self.screen() or QApplication.primaryScreen()
+        max_w = 720
+        if screen is not None:
+            max_w = min(720, int(screen.availableGeometry().width() * 0.9))
+        self.widget.setMinimumWidth(max(420, max_w))
         # Cap the dialog height to 80% of the available screen so the fixed
         # button row at the bottom is always reachable; the file list scrolls.
-        screen = self.screen() or QApplication.primaryScreen()
-        if screen is not None:
-            avail = screen.availableGeometry().height()
-            self.widget.setMaximumHeight(int(avail * 0.8))
+        _cap_dialog_height(self)
+        # Let the button row wrap on very narrow windows.
+        _flow_dialog_buttons(self)
         # Nothing to do if the plan is empty.
         self.yesButton.setEnabled(bool(plan))
 
@@ -1346,16 +1527,35 @@ class CustomizeViewDialog(MessageBoxBase):
         self.viewLayout.addWidget(CaptionLabel(
             "Choose which optional panels appear on the Identify page.", self))
 
+        # The checkboxes live inside a scroll area so the dialog never grows
+        # past the screen no matter how many panels are added; the button row
+        # stays fixed at the bottom, outside the scroll area.
         self._checks: dict = {}
+        content = QWidget(self)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
         for key, label in self._PANELS:
-            cb = CheckBox(label, self)
+            cb = CheckBox(label, content)
             cb.setChecked(bool(current.get(key, True)))
-            self.viewLayout.addWidget(cb)
+            content_layout.addWidget(cb)
             self._checks[key] = cb
+        content_layout.addStretch(1)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.viewLayout.addWidget(scroll, 1)
 
         self.yesButton.setText("Apply")
         self.cancelButton.setText("Cancel")
         self.widget.setMinimumWidth(420)
+        # Keep the dialog on-screen and let its buttons wrap when narrow.
+        _cap_dialog_height(self)
+        _flow_dialog_buttons(self)
 
     def selected_panels(self) -> dict:
         return {key: cb.isChecked() for key, cb in self._checks.items()}
