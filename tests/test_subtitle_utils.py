@@ -1,12 +1,16 @@
 """Tests for subtitle parsing, phonetic encoding and the OpenSubtitles helper."""
 import pytest
 
-from subtitle_utils import (
-    parse_srt, parse_vtt, parse_subtitle_file, download_opensubtitles,
-    strip_language_code, clean_subtitle_filename, parse_episode_info,
-)
 from fingerprint_core import phonetic_encode_word, phonetic_token_stream
-
+from subtitle_utils import (
+    clean_subtitle_filename,
+    download_opensubtitles,
+    parse_episode_info,
+    parse_srt,
+    parse_subtitle_file,
+    parse_vtt,
+    strip_language_code,
+)
 
 # ---------------------------------------------------------------------------
 # filename language-code stripping

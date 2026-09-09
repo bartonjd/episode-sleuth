@@ -6,8 +6,6 @@ reference DB built from the subtitle fixtures.
 """
 from types import SimpleNamespace
 
-import pytest
-
 import engine.matcher as matcher
 from engine.matcher import identify_one
 

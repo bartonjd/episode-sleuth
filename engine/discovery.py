@@ -19,7 +19,7 @@ from .types import MEDIA_EXTS
 # ``from engine.discovery import parse_episode_info``. The canonical
 # implementation stays in subtitle_utils (shared with create_fingerprint).
 try:  # pragma: no cover - defensive; subtitle_utils has light deps
-    from subtitle_utils import parse_episode_info, clean_subtitle_filename
+    from subtitle_utils import clean_subtitle_filename, parse_episode_info
 except Exception:  # pragma: no cover
     parse_episode_info = None          # type: ignore[assignment]
     clean_subtitle_filename = None     # type: ignore[assignment]

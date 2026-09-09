@@ -2,29 +2,62 @@
 """Identify page: match a folder of DVD rips to their episodes."""
 from __future__ import annotations
 
+import logging
 import os
 import shutil
-import logging
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    from ..main_window import MainWindow
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
-    QTableWidgetItem, QHeaderView, QFileDialog, QAbstractItemView,
+    QAbstractItemView,
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
-
 from qfluentwidgets import (
-    FluentIcon as FIF, PrimaryPushButton, PushButton, SpinBox, DoubleSpinBox,
-    TableWidget, ProgressBar, StateToolTip, InfoBar, InfoBarPosition,
-    BodyLabel, TitleLabel, CaptionLabel, MessageBox, SearchLineEdit, ToolButton,
-    SegmentedWidget, CheckBox, MessageBoxBase, SubtitleLabel, TextEdit,
+    BodyLabel,
+    CaptionLabel,
+    CheckBox,
+    DoubleSpinBox,
+    InfoBar,
+    InfoBarPosition,
+    MessageBox,
+    MessageBoxBase,
+    PrimaryPushButton,
+    ProgressBar,
+    PushButton,
+    SearchLineEdit,
+    SegmentedWidget,
+    SpinBox,
+    StateToolTip,
+    SubtitleLabel,
+    TableWidget,
+    TextEdit,
+    TitleLabel,
+    ToolButton,
+)
+from qfluentwidgets import (
+    FluentIcon as FIF,
 )
 
 from engine import (
-    FileResult, write_csv, write_json, episode_id_str, titles_equivalent,
+    FileResult,
+    episode_id_str,
+    titles_equivalent,
+    write_csv,
+    write_json,
 )
+
 # Filename title parser (re-exported by the engine; may be None if the optional
 # subtitle_utils dependency is unavailable - used only for the mismatch badge).
 try:
@@ -40,13 +73,21 @@ try:
 except Exception:  # pragma: no cover - only if deps are missing
     stt_utils = None
 
+from .. import rename_history
 from ..constants import (
-    HERE, COLOR_OK, COLOR_MEDIUM, COLOR_REVIEW,
-    LEGEND_OK, LEGEND_MEDIUM, LEGEND_REVIEW, PILL_HIGH, PILL_MED, PILL_LOW,
+    COLOR_MEDIUM,
+    COLOR_OK,
+    COLOR_REVIEW,
+    HERE,
+    LEGEND_MEDIUM,
+    LEGEND_OK,
+    LEGEND_REVIEW,
+    PILL_HIGH,
+    PILL_LOW,
+    PILL_MED,
 )
 from ..widgets import Card, _path_row
 from ..workers import IdentifyWorker
-from .. import rename_history
 
 # Order of the status filter tabs and the categories they map to.
 STATUS_TABS = ["All", "Rename", "Correct", "Review"]

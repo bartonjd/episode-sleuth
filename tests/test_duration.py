@@ -9,10 +9,8 @@ Covers, all offline:
 """
 import sqlite3
 
-import pytest
-
-from fingerprint_core import FingerprintDB, MediaInfo
 from engine.duration_lookup import subtitle_duration_fallback
+from fingerprint_core import FingerprintDB, MediaInfo
 
 
 def _mk(**kw):
@@ -84,9 +82,10 @@ def test_subtitle_duration_fallback_empty_is_none():
 
 def _identify(monkeypatch, ref_db_path, engine_cfg, fp_cfg, sample_audio,
               transcript, duration):
+    from types import SimpleNamespace
+
     import engine.matcher as matcher
     from engine.matcher import identify_one
-    from types import SimpleNamespace
     per_window = [(duration * f, transcript) for f in (0.1, 0.3, 0.5, 0.7, 0.9)]
     monkeypatch.setattr(matcher, "_probe_duration", lambda path: duration)
     monkeypatch.setattr(matcher, "transcribe_samples",

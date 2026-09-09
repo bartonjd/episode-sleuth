@@ -14,8 +14,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, List, Optional
 
-from .types import FileResult
 from .matcher import identify_one
+from .types import FileResult
 
 
 def batch_identify(media: List[str], db_path: str, fp_cfg: Any, cfg: dict, args: Any,

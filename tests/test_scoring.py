@@ -1,10 +1,16 @@
 """Tests for the confidence-scoring logic: time weighting, contiguous-run
 bonuses, metadata title boosts and the fuzzy fallback."""
-from fingerprint_core import (
-    MediaInfo, MatchResult, _contiguous_run_bonus, score_matches,
-    fingerprint_text, phonetic_token_stream, score_fuzzy_matches, FuzzyConfig,
-)
 from engine.scoring import _time_weight, apply_metadata_boosts
+from fingerprint_core import (
+    FuzzyConfig,
+    MatchResult,
+    MediaInfo,
+    _contiguous_run_bonus,
+    fingerprint_text,
+    phonetic_token_stream,
+    score_fuzzy_matches,
+    score_matches,
+)
 
 
 # ---------------------------------------------------------------------------

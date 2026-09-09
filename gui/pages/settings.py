@@ -3,18 +3,39 @@
 Vosk speech-to-text model manager."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..main_window import MainWindow
+
 import os
-from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog,
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QVBoxLayout,
+    QWidget,
 )
-
 from qfluentwidgets import (
-    FluentIcon as FIF, PrimaryPushButton, PushButton, SpinBox, ComboBox,
-    ProgressBar, InfoBar, InfoBarPosition, BodyLabel, TitleLabel, CaptionLabel,
-    StrongBodyLabel, MessageBox, LineEdit, SwitchButton,
+    BodyLabel,
+    CaptionLabel,
+    ComboBox,
+    InfoBar,
+    InfoBarPosition,
+    LineEdit,
+    MessageBox,
+    PrimaryPushButton,
+    ProgressBar,
+    PushButton,
+    SpinBox,
+    StrongBodyLabel,
+    SwitchButton,
+    TitleLabel,
+)
+from qfluentwidgets import (
+    FluentIcon as FIF,
 )
 
 # Default media extensions offered in the Identify options card. Imported from

@@ -31,18 +31,27 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from .types import (
-    FileResult, EpisodeGuess,
-    MEDIA_EXTS, VIDEO_EXTS, AUDIO_EXTS, DEFAULT_MEDIA_EXTS,
-    DEFAULT_SAMPLE_POINTS,
-)
-from .discovery import (
-    discover_media, episode_id_str, build_suggested_filename, sanitize_filename,
-    parse_media_exts, normalize_part_markers, titles_equivalent,
-)
-from .scoring import score_matches, run_fuzzy_stage, apply_metadata_boosts
-from .matcher import identify_one, transcribe_samples, sample_windows
 from .batch import batch_identify, write_csv, write_json
+from .discovery import (
+    build_suggested_filename,
+    discover_media,
+    episode_id_str,
+    normalize_part_markers,
+    parse_media_exts,
+    sanitize_filename,
+    titles_equivalent,
+)
+from .matcher import identify_one, sample_windows, transcribe_samples
+from .scoring import apply_metadata_boosts, run_fuzzy_stage, score_matches
+from .types import (
+    AUDIO_EXTS,
+    DEFAULT_MEDIA_EXTS,
+    DEFAULT_SAMPLE_POINTS,
+    MEDIA_EXTS,
+    VIDEO_EXTS,
+    EpisodeGuess,
+    FileResult,
+)
 
 __all__ = [
     # types

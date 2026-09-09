@@ -10,18 +10,37 @@ to the same SQLite database the Build and Identify pages use, via the
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    from ..main_window import MainWindow
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QHeaderView, QAbstractItemView,
+    QAbstractItemView,
+    QHBoxLayout,
+    QHeaderView,
     QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
-
 from qfluentwidgets import (
-    FluentIcon as FIF, PrimaryPushButton, PushButton, LineEdit, TableWidget,
-    InfoBar, InfoBarPosition, TitleLabel, CaptionLabel, MessageBox,
-    MessageBoxBase, SubtitleLabel, BodyLabel, SpinBox,
+    BodyLabel,
+    CaptionLabel,
+    InfoBar,
+    InfoBarPosition,
+    LineEdit,
+    MessageBox,
+    MessageBoxBase,
+    PrimaryPushButton,
+    PushButton,
+    SpinBox,
+    SubtitleLabel,
+    TableWidget,
+    TitleLabel,
+)
+from qfluentwidgets import (
+    FluentIcon as FIF,
 )
 
 # Core database helpers, imported defensively so the page still loads even if the

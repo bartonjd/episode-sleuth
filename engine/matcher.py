@@ -21,14 +21,16 @@ import threading
 import time
 from typing import Any, Callable, List, Optional, Tuple
 
-from fingerprint_core import FingerprintDB, FingerprintConfig, score_matches
+from fingerprint_core import FingerprintConfig, FingerprintDB, score_matches
 
-from .types import EpisodeGuess, FileResult
-from .discovery import episode_id_str, build_suggested_filename
+from .discovery import build_suggested_filename, episode_id_str
 from .scoring import (
-    _build_weighted_query, apply_metadata_boosts,
-    _adaptive_review_threshold, run_fuzzy_stage,
+    _adaptive_review_threshold,
+    _build_weighted_query,
+    apply_metadata_boosts,
+    run_fuzzy_stage,
 )
+from .types import EpisodeGuess, FileResult
 
 # Serialises console prints from parallel workers so lines do not interleave.
 _print_lock = threading.Lock()

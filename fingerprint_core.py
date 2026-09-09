@@ -13,15 +13,15 @@ This module also contains the SQLite-backed fingerprint database and the
 matching / scoring logic so that every entry-point script behaves consistently.
 """
 
+import hashlib
+import json
+import logging
 import os
 import re
-import json
-import hashlib
-import logging
 import sqlite3
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Dict, Iterable, Optional, Tuple
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from metaphone import doublemetaphone
 
@@ -40,6 +40,7 @@ def load_typed_config(path: Optional[str] = None):
     prefer this over the dict-returning :func:`load_config`.
     """
     from pathlib import Path as _Path
+
     import config as _cfgmod
 
     engine_path = _Path(path or DEFAULT_CONFIG_PATH)
@@ -994,10 +995,12 @@ class FuzzyConfig:
         )
 
 
-def score_fuzzy_matches(query_tokens: List[str],
-                        candidate_streams: Dict[int, Tuple[MediaInfo, List[str], List[Optional[int]]]],
-                        fuzzy_cfg: Optional[FuzzyConfig] = None,
-                        top_n: int = 5) -> List[MatchResult]:
+def score_fuzzy_matches(
+    query_tokens: List[str],
+    candidate_streams: Dict[int, Tuple[MediaInfo, List[str], List[Optional[int]]]],
+    fuzzy_cfg: Optional[FuzzyConfig] = None,
+    top_n: int = 5,
+) -> List[MatchResult]:
     """Rank candidates by order-preserving phonetic LCS against the query.
 
     Parameters

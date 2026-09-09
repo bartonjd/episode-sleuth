@@ -2,10 +2,20 @@
 """Log page: live engine output for the current session."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from ..main_window import MainWindow
+
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    FluentIcon as FIF, PushButton, TextEdit, TitleLabel, CaptionLabel,
+    CaptionLabel,
+    PushButton,
+    TextEdit,
+    TitleLabel,
+)
+from qfluentwidgets import (
+    FluentIcon as FIF,
 )
 
 

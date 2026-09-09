@@ -6,9 +6,9 @@ dark, acrylic FluentWindow with an icon sidebar.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
-import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -20,22 +20,28 @@ from PySide6.QtWidgets import QApplication
 APP_ICON_PATH = Path(__file__).resolve().parent.parent / "packaging" / "app.ico"
 
 from qfluentwidgets import (
-    FluentWindow, NavigationItemPosition, FluentIcon as FIF,
-    setTheme, setThemeColor, Theme,
+    FluentIcon as FIF,
+)
+from qfluentwidgets import (
+    FluentWindow,
+    NavigationItemPosition,
+    Theme,
+    setTheme,
+    setThemeColor,
 )
 
 from gui_config import GuiConfig
 
 from .constants import (
-    APP_TITLE, DEFAULT_DB, DEFAULT_CONFIG, HERE,
-    COLOR_OK, COLOR_MEDIUM, COLOR_REVIEW,
+    APP_TITLE,
+    DEFAULT_DB,
 )
 from .logging_bridge import LogBridge, QtLogHandler
-from .pages.identify import IdentifyInterface
 from .pages.build import BuildInterface
+from .pages.identify import IdentifyInterface
 from .pages.library import LibraryInterface
-from .pages.settings import SettingsInterface
 from .pages.log import LogInterface
+from .pages.settings import SettingsInterface
 
 
 class MainWindow(FluentWindow):

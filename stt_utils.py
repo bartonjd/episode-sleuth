@@ -12,16 +12,15 @@ Two engines are supported:
 Audio is normalised to 16 kHz mono 16-bit PCM via pydub/ffmpeg before STT.
 """
 
-import os
-import sys
 import json
-import wave
-import shutil
 import logging
-import zipfile
+import os
+import shutil
+import sys
 import tempfile
 import urllib.request
-from typing import Optional, List, Tuple, Callable
+import zipfile
+from typing import Callable, List, Optional
 
 # pydub is only needed for AUDIO TRANSCRIPTION (it normalises audio via
 # ffmpeg and depends on the C ``audioop`` module). It is deliberately imported
@@ -33,8 +32,8 @@ from typing import Optional, List, Tuple, Callable
 # Guarding it here means the Vosk model download and the GUI still function,
 # and only actual transcription surfaces a clear, actionable error.
 try:
-    from pydub import AudioSegment
     import pydub.utils
+    from pydub import AudioSegment
     _PYDUB_IMPORT_ERROR = None
 except Exception as _exc:  # pragma: no cover - depends on runtime environment
     AudioSegment = None
@@ -58,8 +57,7 @@ def _require_pydub():
 # Known Vosk English models keyed by a friendly "size" (see constants.py). The
 # small model is the default (fast, ~40 MB); the large model is far more
 # accurate on clean audio (~1.8 GB) and pushes DVD-rip confidence higher.
-from constants import VOSK_MODELS, DEFAULT_MODELS_DIR  # noqa: E402
-
+from constants import DEFAULT_MODELS_DIR, VOSK_MODELS  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Suppress ffmpeg/ffprobe console windows on Windows
@@ -103,7 +101,7 @@ def segment_to_wav_bytes(seg: "AudioSegment") -> bytes:
 
 class VoskTranscriber:
     def __init__(self, model_path: str, sample_rate: int = 16000):
-        from vosk import Model, KaldiRecognizer, SetLogLevel
+        from vosk import KaldiRecognizer, Model, SetLogLevel
         SetLogLevel(-1)
         if not os.path.isdir(model_path):
             raise FileNotFoundError(
@@ -389,7 +387,7 @@ def get_transcriber(cfg: dict):
     For Vosk the model is selected in priority order:
       1. an explicit ``stt.vosk_model_path`` (backward compatible), else
       2. ``stt.model_size`` ("small" / "large") resolved under ``models/``.
-    
+
     If the selected model is missing, it is auto-downloaded (the large model
     is ~1.8 GB so this may take a few minutes on first use).
     """

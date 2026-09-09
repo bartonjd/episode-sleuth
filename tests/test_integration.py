@@ -11,11 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import cli.build_fingerprints as cf
 import engine.matcher as matcher
 from engine.batch import batch_identify, write_csv, write_json
 from fingerprint_core import FingerprintConfig, FingerprintDB, load_config
-import cli.build_fingerprints as cf
-
 
 pytestmark = pytest.mark.slow
 

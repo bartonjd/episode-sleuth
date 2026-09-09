@@ -22,6 +22,25 @@ filterwarnings = [
     "ignore::PendingDeprecationWarning",
 ]
 
+[tool.ruff]
+# Match the project's minimum supported interpreter so pyupgrade-style rules do
+# not suggest syntax that would break on Python 3.9.
+target-version = "py39"
+line-length = 100
+# Never lint throwaway build venvs, packaging output or vendored code.
+extend-exclude = [".buildvenv", "build", "dist", ".git", "__pycache__"]
+
+[tool.ruff.lint]
+# A focused, high-signal rule set: pycodestyle errors/warnings (E, W),
+# pyflakes (F) and import sorting (I). This catches real problems (unused
+# imports, undefined names, unsorted imports) without drowning an existing
+# codebase in stylistic churn.
+select = ["E", "F", "W", "I"]
+# E402 (module import not at top): the flat module layout deliberately performs
+# sys.path setup and defensive/optional imports before some imports, so this is
+# expected and intentional here.
+ignore = ["E402"]
+
 [tool.mypy]
 # Type-check the identification engine package. The engine is the reusable
 # core, so it is where static typing pays off most. Run with:

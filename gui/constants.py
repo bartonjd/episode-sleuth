@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Reuse the project-level filename constants so the GUI, engine and CLI agree.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from constants import DEFAULT_DB_PATH, DEFAULT_CONFIG_PATH  # noqa: E402
+from constants import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH  # noqa: E402
 
 APP_TITLE = "EpisodeSleuth"
 DEFAULT_DB = os.path.join(HERE, DEFAULT_DB_PATH)

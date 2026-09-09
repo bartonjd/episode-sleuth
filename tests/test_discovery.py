@@ -3,10 +3,15 @@ subtitle_utils.parse_episode_info / clean_subtitle_filename)."""
 import os
 
 from engine.discovery import (
-    discover_media, episode_id_str, sanitize_filename, build_suggested_filename,
-    parse_media_exts, normalize_part_markers, titles_equivalent,
+    build_suggested_filename,
+    discover_media,
+    episode_id_str,
+    normalize_part_markers,
+    parse_media_exts,
+    sanitize_filename,
+    titles_equivalent,
 )
-from subtitle_utils import parse_episode_info, clean_subtitle_filename
+from subtitle_utils import clean_subtitle_filename, parse_episode_info
 
 
 # ---------------------------------------------------------------------------

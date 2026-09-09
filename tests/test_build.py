@@ -12,9 +12,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fingerprint_core import validate_db_path, FingerprintDB
 from cli.build_fingerprints import run_directory
-
+from fingerprint_core import FingerprintDB, validate_db_path
 
 # ---------------------------------------------------------------------------
 # Part 2: DB path validation

@@ -1,0 +1,29 @@
+# =====================================================================
+# Build / CI toolchain for EpisodeSleuth (pinned for reproducibility)
+# =====================================================================
+# These are the tools needed to lint, test, build and package the app.
+# Runtime dependencies live in requirements.txt; this file is only for
+# maintainers and CI. Install with:
+#
+#     python -m pip install -r requirements-build.txt
+#
+# Versions are pinned so a build run today matches a build run months from
+# now. Bump them deliberately (and re-run `make lint test`) when upgrading.
+
+# --- packaging into standalone binaries ------------------------------
+pyinstaller==6.22.2
+
+# --- source distribution / wheels ------------------------------------
+build==1.2.2.post1
+setuptools>=61.0
+wheel==0.45.1
+
+# --- linting ---------------------------------------------------------
+ruff==0.16.6
+
+# --- testing ---------------------------------------------------------
+pytest==8.3.5
+pytest-mock==3.14.0
+
+# --- git hooks -------------------------------------------------------
+pre-commit==4.0.1

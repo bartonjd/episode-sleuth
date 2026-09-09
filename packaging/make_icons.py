@@ -11,6 +11,7 @@ Outputs:
   packaging/assets/SplashScreen.png      - MSIX splash
 """
 import os
+
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))

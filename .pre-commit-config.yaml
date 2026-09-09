@@ -1,0 +1,31 @@
+# Pre-commit hooks for EpisodeSleuth.
+#
+# One-time setup (after `pip install -r requirements-build.txt`):
+#     pre-commit install
+#
+# Then the hooks run automatically on `git commit`. To run them against the
+# whole tree on demand:
+#     pre-commit run --all-files
+#
+# The ruff version here is kept in sync with requirements-build.txt so local
+# hooks, CI and manual `make lint` all use the same linter.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6
+    hooks:
+      # Lint (and auto-fix) with the config in pyproject.toml.
+      - id: ruff
+        args: [--fix]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: mixed-line-ending
+        args: [--fix=lf]

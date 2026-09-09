@@ -121,7 +121,8 @@ class GuiConfig:
     def _save_unified(self) -> bool:
         """Write ``self._data`` back through config.AppConfig. Returns success."""
         try:
-            from config import AppConfig, GuiConfig as _GuiSchema
+            from config import AppConfig
+            from config import GuiConfig as _GuiSchema
             app = AppConfig.load()
             known = set(_GuiSchema.__dataclass_fields__)  # type: ignore[attr-defined]
             app.gui = _GuiSchema.from_gui_dict(

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Signal, QObject
+from PySide6.QtCore import QObject, Signal
 
 
 class LogBridge(QObject):

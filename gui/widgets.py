@@ -2,9 +2,8 @@
 """Small reusable widgets shared across the GUI pages."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QSizePolicy
-
-from qfluentwidgets import CardWidget, StrongBodyLabel, LineEdit
+from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout
+from qfluentwidgets import CardWidget, LineEdit, StrongBodyLabel
 
 
 class Card(CardWidget):

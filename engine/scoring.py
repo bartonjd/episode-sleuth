@@ -20,8 +20,13 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fingerprint_core import (
-    FingerprintDB, FingerprintConfig, FuzzyConfig,
-    fingerprint_text, phonetic_token_stream, score_fuzzy_matches, score_matches,
+    FingerprintConfig,
+    FingerprintDB,
+    FuzzyConfig,
+    fingerprint_text,
+    phonetic_token_stream,
+    score_fuzzy_matches,
+    score_matches,
 )
 
 __all__ = [

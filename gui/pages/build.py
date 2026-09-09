@@ -4,17 +4,29 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QFileDialog
+if TYPE_CHECKING:
+    from ..main_window import MainWindow
 
+from PySide6.QtWidgets import QFileDialog, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    FluentIcon as FIF, PrimaryPushButton, PushButton, LineEdit,
-    IndeterminateProgressBar, TextEdit, InfoBar, InfoBarPosition,
-    TitleLabel, CaptionLabel, CheckBox,
+    CaptionLabel,
+    CheckBox,
+    IndeterminateProgressBar,
+    InfoBar,
+    InfoBarPosition,
+    LineEdit,
+    PrimaryPushButton,
+    PushButton,
+    TextEdit,
+    TitleLabel,
+)
+from qfluentwidgets import (
+    FluentIcon as FIF,
 )
 
-from ..constants import HERE, DEFAULT_DB
+from ..constants import DEFAULT_DB
 from ..widgets import Card, _path_row
 from ..workers import BuildWorker
 

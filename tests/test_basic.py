@@ -58,7 +58,8 @@ def test_config_module_imports():
 def test_config_loads_old_files(tmp_path):
     """Old-format config.json + gui_config.json load and merge correctly."""
     import json
-    from config import AppConfig, CONFIG_FILE, GUI_CONFIG_FILE
+
+    from config import CONFIG_FILE, GUI_CONFIG_FILE, AppConfig
 
     (tmp_path / CONFIG_FILE).write_text(json.dumps({
         "stt": {"engine": "vosk",
@@ -97,8 +98,8 @@ def test_config_validation_coerces_bad_enums():
 
 def test_load_config_backward_compat():
     """fingerprint_core.load_config still returns the classic engine dict."""
-    from fingerprint_core import load_config, load_typed_config
     from config import AppConfig
+    from fingerprint_core import load_config, load_typed_config
 
     cfg = load_config()
     assert isinstance(cfg, dict)

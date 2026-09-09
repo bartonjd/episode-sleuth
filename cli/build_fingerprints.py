@@ -34,28 +34,35 @@ Files that have already been fingerprinted are skipped automatically (matched by
 their source file path). Pass --force to re-process them anyway.
 """
 
-import os
-import sys
 import argparse
 import logging
+import os
+import sys
 from concurrent.futures import (
-    ThreadPoolExecutor, ProcessPoolExecutor, as_completed,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
 )
 from concurrent.futures.process import BrokenProcessPool
+
+import subtitle_utils as su
+from engine.duration_lookup import (
+    fetch_episode_runtime,
+    subtitle_duration_fallback,
+)
+from fingerprint_core import (
+    FingerprintConfig,
+    FingerprintDB,
+    fingerprint_text,
+    load_config,
+    phonetic_token_stream,
+    setup_logging,
+)
 
 # Ensure the flat engine modules on the project root are importable, and use the
 # project root (not this cli/ directory) to anchor the downloads dir and any
 # relative DB path - preserving the behaviour of the original script.
 from . import _ROOT as PROJECT_ROOT  # noqa: F401
-
-from fingerprint_core import (
-    load_config, setup_logging, FingerprintConfig, FingerprintDB,
-    MediaInfo, fingerprint_text, phonetic_token_stream,
-)
-import subtitle_utils as su
-from engine.duration_lookup import (
-    fetch_episode_runtime, subtitle_duration_fallback,
-)
 
 # Default number of parallel workers for building (matches the identifier).
 DEFAULT_BUILD_WORKERS = 4
@@ -361,7 +368,8 @@ def run_show(query, db, fp_cfg, cfg, limit, media_type, year_override=None,
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Create phonetic fingerprint DB from subtitles.")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--show", help="Show/movie to download from OpenSubtitles, e.g. 'Matlock 1986'")
+    group.add_argument("--show",
+                       help="Show/movie to download from OpenSubtitles, e.g. 'Matlock 1986'")
     group.add_argument("--dir", help="Directory or file of local .srt/.vtt subtitles")
     group.add_argument("--file", help="Single .srt/.vtt subtitle file to fingerprint")
     group.add_argument("--list", action="store_true", help="List media already in the database")
@@ -372,7 +380,8 @@ def main(argv=None):
                              "the one show and reduces cross-show false matches.")
     parser.add_argument("--year", type=int, help="Override start year")
     parser.add_argument("--type", choices=["tv", "movie"], help="Force media type")
-    parser.add_argument("--limit", type=int, default=5, help="Max subtitles to download (show mode)")
+    parser.add_argument("--limit", type=int, default=5,
+                        help="Max subtitles to download (show mode)")
     parser.add_argument("--force", action="store_true",
                         help="Re-process files even if they are already in the "
                              "database. By default, files that have already been "

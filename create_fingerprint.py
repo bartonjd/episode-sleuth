@@ -26,7 +26,10 @@ if _ROOT not in sys.path:
 # Re-export the public builder API from its new home. Bare import so this works
 # both as a loose script and inside the package.
 from cli.build_fingerprints import (  # noqa: F401
-    fingerprint_subtitle_file, run_directory, run_show, main,
+    fingerprint_subtitle_file,
+    main,
+    run_directory,
+    run_show,
 )
 
 warnings.warn(

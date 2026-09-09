@@ -8,17 +8,17 @@ season/episode/year is heuristically extracted so the fingerprint database can
 be labelled automatically.
 """
 
+import gzip
+import logging
 import os
 import re
-import gzip
-import time
-import logging
-import zipfile
 import tempfile
-from typing import List, Tuple, Optional
+import time
+import zipfile
+from typing import List, Optional, Tuple
 
-import requests
 import pysrt
+import requests
 import webvtt
 
 from fingerprint_core import MediaInfo

@@ -2,7 +2,11 @@
 import json
 
 from config import (
-    AppConfig, EngineConfig, GuiConfig, CONFIG_FILE, GUI_CONFIG_FILE,
+    CONFIG_FILE,
+    GUI_CONFIG_FILE,
+    AppConfig,
+    EngineConfig,
+    GuiConfig,
 )
 
 

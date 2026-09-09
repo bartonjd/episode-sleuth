@@ -15,11 +15,17 @@ no microphone and no internet. It:
 import os
 import tempfile
 
-from fingerprint_core import (
-    load_config, FingerprintConfig, FingerprintDB, fingerprint_text, score_matches,
-    phonetic_token_stream, score_fuzzy_matches, FuzzyConfig,
-)
 import create_fingerprint as cf
+from fingerprint_core import (
+    FingerprintConfig,
+    FingerprintDB,
+    FuzzyConfig,
+    fingerprint_text,
+    load_config,
+    phonetic_token_stream,
+    score_fuzzy_matches,
+    score_matches,
+)
 
 SRT_EP1 = """1
 00:00:01,000 --> 00:00:04,000

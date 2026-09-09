@@ -6,23 +6,25 @@ engine calls off-thread and communicate purely through signals.
 """
 from __future__ import annotations
 
-import os
-import sys
 import logging
+import os
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from typing import List
 
 from PySide6.QtCore import QThread, Signal
 
-from .constants import HERE
-
 # ---- engine (identical to the CLI path) ----
 from engine import (
-    FileResult, discover_media, identify_one,
+    FileResult,
+    discover_media,
+    identify_one,
 )
 from fingerprint_core import FingerprintConfig, load_config
+
+from .constants import HERE
 
 # Speech-to-text helpers (Vosk model download + lookup). Imported defensively so
 # the GUI still launches even if an optional dependency is missing.
