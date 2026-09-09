@@ -12,14 +12,16 @@ if TYPE_CHECKING:
     from ..main_window import MainWindow
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QBrush
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QSizePolicy,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -86,11 +88,44 @@ from ..constants import (
     PILL_LOW,
     PILL_MED,
 )
-from ..widgets import Card, _path_row
+from ..widgets import Card, CollapsibleCard, _path_row
 from ..workers import IdentifyWorker
 
 # Order of the status filter tabs and the categories they map to.
 STATUS_TABS = ["All", "Rename", "Correct", "Review"]
+
+# View-density presets. Each entry drives the page's spacing, the card content
+# margins/spacing, the results-table row height, and the page-header font size.
+# Keys: root_margin (l, t, r, b), root_spacing, card_margin (l, t, r, b),
+# card_spacing, row_height (px), header_px (pixel size for the title label).
+# The stock TitleLabel is 28px; every preset here is <= 24px so the header is
+# reduced in size (and paired with tighter spacing) at all densities.
+DENSITY_SPECS = {
+    "Compact": {
+        "root_margin": (16, 10, 16, 10),
+        "root_spacing": 8,
+        "card_margin": (14, 8, 14, 8),
+        "card_spacing": 6,
+        "row_height": 26,
+        "header_px": 18,
+    },
+    "Standard": {
+        "root_margin": (28, 16, 28, 20),
+        "root_spacing": 12,
+        "card_margin": (20, 14, 20, 14),
+        "card_spacing": 10,
+        "row_height": 34,
+        "header_px": 22,
+    },
+    "Comfortable": {
+        "root_margin": (36, 26, 36, 26),
+        "root_spacing": 18,
+        "card_margin": (26, 20, 26, 20),
+        "card_spacing": 14,
+        "row_height": 44,
+        "header_px": 24,
+    },
+}
 
 
 class IdentifyInterface(QWidget):
@@ -124,14 +159,16 @@ class IdentifyInterface(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 24)
         root.setSpacing(16)
+        self.root = root
 
-        root.addWidget(TitleLabel("Identify episodes"))
+        self.header_label = TitleLabel("Identify episodes")
+        root.addWidget(self.header_label)
         root.addWidget(CaptionLabel(
             "Point at a folder of DVD rips and match each file to its episode. "
             "The reference database is set on the Settings page."))
 
         # --- source card ---
-        src_card = Card("DVD rips to identify")
+        self.src_card = src_card = Card("DVD rips to identify")
         self.source_edit = _path_row("Folder or single video/audio file")
         self.source_edit.setText(self.cfg.get("last_source", ""))
         folder_btn = PushButton("Folder", self, FIF.FOLDER)
@@ -141,8 +178,8 @@ class IdentifyInterface(QWidget):
         src_card.add(self.source_edit, folder_btn, file_btn)
         root.addWidget(src_card)
 
-        # --- options card ---
-        opt_card = Card("Options")
+        # --- options card (collapsible) ---
+        self.opt_card = opt_card = CollapsibleCard("Options")
         grid = QGridLayout()
         grid.setHorizontalSpacing(24)
         grid.setVerticalSpacing(12)
@@ -206,15 +243,25 @@ class IdentifyInterface(QWidget):
         self.undo_btn.clicked.connect(self._undo_last_rename)
         self.export_json_btn.clicked.connect(self._export_json)
         self.export_csv_btn.clicked.connect(self._export_csv)
+        # "Customize View" is only shown in Advanced mode (toggled by
+        # apply_view_preferences); it opens a dialog to pick which optional
+        # panels are visible.
+        self.customize_btn = PushButton("Customize View", self, FIF.SETTING)
+        self.customize_btn.setToolTip(
+            "Choose which optional panels are shown on this page")
+        self.customize_btn.clicked.connect(self._open_customize_view)
         actions.addWidget(self.preview_btn)
         actions.addWidget(self.rename_btn)
         actions.addWidget(self.undo_btn)
         actions.addWidget(self.export_json_btn)
         actions.addWidget(self.export_csv_btn)
+        actions.addWidget(self.customize_btn)
         root.addLayout(actions)
 
-        # --- dry-run preference ---
-        dry_row = QHBoxLayout()
+        # --- dry-run preference (wrapped so it can be hidden by view mode) ---
+        self.dry_row_widget = QWidget()
+        dry_row = QHBoxLayout(self.dry_row_widget)
+        dry_row.setContentsMargins(0, 0, 0, 0)
         dry_row.setSpacing(8)
         self.dry_run_check = CheckBox("Always preview renames before copying")
         self.dry_run_check.setChecked(bool(self._ident_get("dry_run_preview", False)))
@@ -224,7 +271,7 @@ class IdentifyInterface(QWidget):
         self.dry_run_check.stateChanged.connect(self._on_dry_run_toggled)
         dry_row.addWidget(self.dry_run_check)
         dry_row.addStretch(1)
-        root.addLayout(dry_row)
+        root.addWidget(self.dry_row_widget)
         # The undo button is only useful once a batch has been recorded.
         self.undo_btn.setEnabled(rename_history.peek_last_batch() is not None)
 
@@ -255,8 +302,12 @@ class IdentifyInterface(QWidget):
         seg_row.addStretch(1)
         root.addLayout(seg_row)
 
-        # --- status colour legend ---
-        root.addLayout(self._build_legend())
+        # --- status colour legend (wrapped so it can be hidden by view mode) ---
+        self.legend_widget = QWidget()
+        legend_layout = self._build_legend()
+        legend_layout.setContentsMargins(0, 0, 0, 0)
+        self.legend_widget.setLayout(legend_layout)
+        root.addWidget(self.legend_widget)
 
         # --- results table ---
         self.table = TableWidget()
@@ -266,6 +317,14 @@ class IdentifyInterface(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setWordWrap(False)
+        # Keep the table usable on small screens: always allow a vertical
+        # scrollbar, scroll smoothly per-pixel, and never shrink below ~200px
+        # while still expanding to fill the remaining page height.
+        self.table.setMinimumHeight(200)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # A clear tooltip explaining what "Samples Agree" means.
         agree_hdr = self.table.horizontalHeaderItem(self.C_AGREE)
         if agree_hdr is not None:
@@ -300,6 +359,9 @@ class IdentifyInterface(QWidget):
         # Setup done: allow the resize handler to persist future changes.
         self._restoring_layout = False
 
+        # Apply the saved view density / mode (spacing, panel visibility).
+        self.apply_view_preferences()
+
     # ----- identify-page config helpers -----
     def _ident_get(self, key: str, default=None):
         """Read one value from the nested ``identify_page`` config section."""
@@ -312,6 +374,63 @@ class IdentifyInterface(QWidget):
         section.update(kwargs)
         self.cfg.set("identify_page", section)
         self.cfg.save()
+
+    # ----- view density / mode -----
+    def _custom_panels(self) -> dict:
+        """Read the per-panel visibility prefs, filling any missing keys."""
+        defaults = {"options": True, "legend": True,
+                    "dry_run": True, "exports": True}
+        saved = self._ident_get("custom_panels", {}) or {}
+        return {k: bool(saved.get(k, v)) for k, v in defaults.items()}
+
+    def apply_view_preferences(self) -> None:
+        """Apply the saved view density and mode to the page.
+
+        Density controls spacing (root margins/spacing, card padding, table
+        row height, header font size). Mode controls panel visibility:
+        Simple hides the optional panels for a clean layout, while Advanced
+        shows them per the user's Customize View choices plus the Customize
+        View button itself.
+        """
+        density = self.cfg.get("view_density", "Standard")
+        spec = DENSITY_SPECS.get(density, DENSITY_SPECS["Standard"])
+        mode = self.cfg.get("view_mode", "Advanced")
+
+        # -- density: page spacing --
+        self.root.setContentsMargins(*spec["root_margin"])
+        self.root.setSpacing(spec["root_spacing"])
+        for card in (self.src_card, self.opt_card):
+            card.set_density(spec["card_margin"], spec["card_spacing"])
+
+        # -- density: results-table row height --
+        self.table.verticalHeader().setDefaultSectionSize(spec["row_height"])
+
+        # -- density: header font size (pixel size; stock TitleLabel is 28px) --
+        font = self.header_label.font()
+        font.setPixelSize(spec["header_px"])
+        self.header_label.setFont(font)
+
+        # -- mode: panel visibility --
+        if mode == "Simple":
+            panels = {"options": False, "legend": False,
+                      "dry_run": False, "exports": False}
+            self.customize_btn.setVisible(False)
+        else:
+            panels = self._custom_panels()
+            self.customize_btn.setVisible(True)
+
+        self.opt_card.setVisible(panels["options"])
+        self.legend_widget.setVisible(panels["legend"])
+        self.dry_row_widget.setVisible(panels["dry_run"])
+        self.export_json_btn.setVisible(panels["exports"])
+        self.export_csv_btn.setVisible(panels["exports"])
+
+    def _open_customize_view(self) -> None:
+        """Open the Customize View dialog (Advanced mode) to pick panels."""
+        dlg = CustomizeViewDialog(self._custom_panels(), self.window())
+        if dlg.exec():
+            self._ident_set(custom_panels=dlg.selected_panels())
+            self.apply_view_preferences()
 
     # ----- table layout persistence -----
     def _restore_column_widths(self) -> None:
@@ -402,6 +521,10 @@ class IdentifyInterface(QWidget):
             ignore_part_format=bool(
                 self.cfg.get("ignore_part_format_differences", True)),
         )
+
+        # Auto-collapse the Options card so the results have maximum room.
+        if not self.opt_card.is_collapsed():
+            self.opt_card.set_collapsed(True)
 
         self.table.setRowCount(0)
         self.results = []
@@ -734,7 +857,9 @@ class IdentifyInterface(QWidget):
         # Episode Title - flag a swapped/mismatched title with a badge icon.
         title_item = self._make_text_item(data.get("episode_title", ""))
         if self._title_mismatch(r, data):
-            title_item.setIcon(FIF.FLAG.icon())
+            # Render the flag in an explicit high-contrast red so it stays
+            # visible on tinted status rows (the theme default can wash out).
+            title_item.setIcon(FIF.FLAG.icon(color=QColor("#d32f2f")))
             title_item.setToolTip(
                 "Identified title differs from the title in the filename - "
                 "the audio may be mislabelled or swapped. Check before renaming.")
@@ -1106,11 +1231,59 @@ class RenamePreviewDialog(MessageBoxBase):
                 item["dest"]) else ""
             lines.append(f"{item['filename']}\n    ->  {rel}{marker}\n")
         view.setPlainText("\n".join(lines) if lines else "Nothing to copy.")
-        view.setMinimumSize(680, 380)
-        self.viewLayout.addWidget(view)
+        # The list scrolls inside a modest fixed-minimum area; let it expand to
+        # fill whatever height the dialog is given rather than forcing a tall
+        # window that can overflow small screens.
+        view.setMinimumHeight(160)
+        view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.viewLayout.addWidget(view, 1)
 
         self.yesButton.setText("Proceed with copy")
         self.cancelButton.setText("Cancel")
         self.widget.setMinimumWidth(720)
+        # Cap the dialog height to 80% of the available screen so the fixed
+        # button row at the bottom is always reachable; the file list scrolls.
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry().height()
+            self.widget.setMaximumHeight(int(avail * 0.8))
         # Nothing to do if the plan is empty.
         self.yesButton.setEnabled(bool(plan))
+
+
+class CustomizeViewDialog(MessageBoxBase):
+    """Pick which optional panels are shown on the Identify page (Advanced).
+
+    Presents one checkbox per toggleable panel. ``exec()`` is truthy when the
+    user accepts; :meth:`selected_panels` then returns the chosen visibility
+    mapping for storing back into config.
+    """
+
+    _PANELS = [
+        ("options", "Options card (samples, workers, thresholds)"),
+        ("legend", "Status colour legend"),
+        ("dry_run", "Always-preview-renames row"),
+        ("exports", "Export JSON / CSV buttons"),
+    ]
+
+    def __init__(self, current: dict, parent=None):
+        super().__init__(parent)
+        self.titleLabel = SubtitleLabel("Customize view", self)
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(CaptionLabel(
+            "Choose which optional panels appear on the Identify page.", self))
+
+        self._checks: dict = {}
+        for key, label in self._PANELS:
+            cb = CheckBox(label, self)
+            cb.setChecked(bool(current.get(key, True)))
+            self.viewLayout.addWidget(cb)
+            self._checks[key] = cb
+
+        self.yesButton.setText("Apply")
+        self.cancelButton.setText("Cancel")
+        self.widget.setMinimumWidth(420)
+
+    def selected_panels(self) -> dict:
+        return {key: cb.isChecked() for key, cb in self._checks.items()}

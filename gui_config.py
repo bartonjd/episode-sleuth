@@ -40,6 +40,9 @@ DEFAULTS: Dict[str, Any] = {
     "last_show_title": "",      # last TV show used for batch library import
     "theme": "Dark",            # "Dark" | "Light" | "Auto"
     "theme_color": "#0078d4",   # Windows 11 accent blue
+    # Global view preferences (apply to the Identify page layout).
+    "view_density": "Standard",  # Compact | Standard | Comfortable
+    "view_mode": "Advanced",     # Simple | Advanced
     # Identify-page UI state (status filter, table layout, dry-run preference).
     # Nested so all Identify-page persistence lives under one key.
     "identify_page": {
@@ -48,6 +51,15 @@ DEFAULTS: Dict[str, Any] = {
         "column_widths": {},        # {column_index_str: width_px}
         "sort_col": -1,             # -1 = unsorted (input order)
         "sort_order": 0,            # 0 = ascending, 1 = descending
+        # Which optional panels are shown in Advanced mode (the Customize View
+        # dialog toggles these). Ignored in Simple mode, which force-hides the
+        # advanced panels for a clean, uncluttered layout.
+        "custom_panels": {
+            "options": True,        # sample/worker options card
+            "legend": True,         # status colour legend
+            "dry_run": True,        # "always preview" preference row
+            "exports": True,        # Export JSON / CSV buttons
+        },
     },
 }
 

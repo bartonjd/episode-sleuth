@@ -124,6 +124,34 @@ class SettingsInterface(QWidget):
         appear_card.addLayout(appear_grid)
         root.addWidget(appear_card)
 
+        # view card (density + mode for the Identify page layout)
+        view_card = Card("View")
+        view_grid = QGridLayout()
+        view_grid.setHorizontalSpacing(24)
+        view_grid.setVerticalSpacing(10)
+        view_grid.addWidget(BodyLabel("Density"), 0, 0)
+        self.density_combo = ComboBox()
+        self.density_combo.addItems(["Compact", "Standard", "Comfortable"])
+        self.density_combo.setCurrentText(self.cfg.get("view_density", "Standard"))
+        self.density_combo.currentTextChanged.connect(self._on_field_changed)
+        view_grid.addWidget(self.density_combo, 1, 0)
+        view_grid.addWidget(
+            CaptionLabel("Spacing, padding, and row height on the Identify "
+                         "page."), 2, 0)
+
+        view_grid.addWidget(BodyLabel("Mode"), 0, 1)
+        self.mode_combo = ComboBox()
+        self.mode_combo.addItems(["Simple", "Advanced"])
+        self.mode_combo.setCurrentText(self.cfg.get("view_mode", "Advanced"))
+        self.mode_combo.currentTextChanged.connect(self._on_field_changed)
+        view_grid.addWidget(self.mode_combo, 1, 1)
+        view_grid.addWidget(
+            CaptionLabel("Simple hides advanced panels for a clean layout; "
+                         "Advanced shows all and adds Customize View."), 2, 1)
+        view_grid.setColumnStretch(2, 1)
+        view_card.addLayout(view_grid)
+        root.addWidget(view_card)
+
         # performance card
         perf_card = Card("Performance")
         perf_grid = QGridLayout()
@@ -263,6 +291,8 @@ class SettingsInterface(QWidget):
             "vosk_model_size": self._selected_model_size(),
             "media_extensions": self.exts_edit.text().strip(),
             "ignore_part_format_differences": bool(self.part_switch.isChecked()),
+            "view_density": self.density_combo.currentText(),
+            "view_mode": self.mode_combo.currentText(),
         }
 
     def _on_field_changed(self, *args):
@@ -355,6 +385,8 @@ class SettingsInterface(QWidget):
         size = orig.get("vosk_model_size", "small")
         if size in self._model_values:
             self.model_combo.setCurrentIndex(self._model_values.index(size))
+        self.density_combo.setCurrentText(orig.get("view_density", "Standard"))
+        self.mode_combo.setCurrentText(orig.get("view_mode", "Advanced"))
         # Re-apply the theme in case the live preview changed it.
         self.win.apply_theme(orig.get("theme", "Dark"))
         self._refresh_model_ui()
@@ -692,11 +724,17 @@ class SettingsInterface(QWidget):
             vosk_model_size=size,
             media_extensions=self.exts_edit.text().strip() or DEFAULT_MEDIA_EXTS,
             ignore_part_format_differences=bool(self.part_switch.isChecked()),
+            view_density=self.density_combo.currentText(),
+            view_mode=self.mode_combo.currentText(),
         )
         self.cfg.save()
         self._saved_model_size = size
         # The saved state becomes the new baseline for unsaved-change detection.
         self._original = self._snapshot()
+        # Push the new view preferences to the live Identify page (if built).
+        identify = getattr(self.win, "identify_interface", None)
+        if identify is not None and hasattr(identify, "apply_view_preferences"):
+            identify.apply_view_preferences()
         InfoBar.success("Saved", "Your settings have been saved.",
                         duration=4000, position=InfoBarPosition.TOP, parent=self)
         return True
