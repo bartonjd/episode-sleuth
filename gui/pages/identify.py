@@ -730,6 +730,7 @@ class IdentifyInterface(QWidget):
             review_confidence=float(self.review_spin.value()),
             runtime_tolerance=4.0,
             vosk_model_size=self.cfg.get("vosk_model_size", "small"),
+            primary_language=self.cfg.get("primary_language", "Auto-detect"),
             show_title=self.cfg.get("last_show_title", ""),
             media_extensions=self.cfg.get("media_extensions", "") or None,
             ignore_part_format=bool(

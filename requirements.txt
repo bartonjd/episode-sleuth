@@ -10,6 +10,12 @@ metaphone>=0.6
 pysrt>=1.1.2
 webvtt-py>=0.4.6
 
+# Optional language detection for multi-language libraries. Used to tag each
+# reference episode with its dialogue language so matching can pick the right
+# phonetic strategy. Entirely optional: if not installed, the build falls back
+# to the configured Primary Language (or English) and everything still works.
+langdetect>=1.0.9
+
 # OpenSubtitles download
 requests>=2.28
 

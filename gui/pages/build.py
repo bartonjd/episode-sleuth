@@ -29,6 +29,7 @@ from qfluentwidgets import (
 from ..constants import DEFAULT_DB
 from ..widgets import Card, _path_row
 from ..workers import BuildWorker
+from ..workers import _resolve_primary_language as _resolve_build_language
 
 
 class BuildInterface(QWidget):
@@ -137,6 +138,13 @@ class BuildInterface(QWidget):
             cmd += ["--overwrite"]
         if fetch_duration:
             cmd += ["--fetch-duration"]
+        # Honour the Primary Language chosen in Settings. "Auto-detect" (or an
+        # unset value) is left off so the builder detects each file's language
+        # individually; any specific choice is passed through so the library is
+        # encoded consistently for that language.
+        lang = _resolve_build_language(self.cfg.get("primary_language"))
+        if lang:
+            cmd += ["--language", lang]
         self._run(cmd)
 
     def _run(self, cmd: List[str]):

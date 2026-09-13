@@ -48,7 +48,7 @@ from concurrent.futures.process import BrokenProcessPool
 import subtitle_utils as su
 from engine.duration_lookup import (
     fetch_episode_runtime,
-    subtitle_duration_fallback,
+    subtitle_duration_with_confidence,
 )
 from fingerprint_core import (
     FingerprintConfig,
@@ -102,6 +102,28 @@ def _compute_fingerprints(path: str, fp_cfg: FingerprintConfig,
         logging.warning("No dialogue cues found in %s", path)
         return None
 
+    # Resolve the dialogue language before encoding. If the config declares a
+    # Primary Language it wins (fast path, no detection). Otherwise auto-detect
+    # from the combined dialogue text so the correct phonetic strategy is used:
+    # Double-Metaphone for English, raw normalised words for other languages.
+    # Detection is best-effort and optional (needs langdetect); on any failure we
+    # keep the incoming config, so a build never breaks over language handling.
+    import dataclasses
+
+    from engine.language_utils import detect_language, normalise_language
+    configured_lang = normalise_language(fp_cfg.language)
+    detected_lang = configured_lang
+    if configured_lang is None:
+        all_text = " ".join(t for (_s, _e, t) in cues if t)
+        detected_lang = detect_language(all_text, default=None)
+        if detected_lang:
+            # Rebuild the encoding config for this file's detected language so
+            # non-English dialogue is matched on raw words, not English phonetics.
+            fp_cfg = dataclasses.replace(fp_cfg, language=detected_lang)
+    # Record the language (ISO code) on the media row; None means "unknown",
+    # which the matcher treats as English/metaphone for backward compatibility.
+    info.language = detected_lang
+
     rows = []
     # Accumulate the full ordered phonetic token stream (with a parallel list of
     # cue start times) so the fuzzy / order-preserving matcher can be used later.
@@ -114,8 +136,13 @@ def _compute_fingerprints(path: str, fp_cfg: FingerprintConfig,
             token_stream.append(tok)
             token_starts.append(start_ms)
 
-    sub_duration = subtitle_duration_fallback(cues)
-    return info, rows, token_stream, token_starts, sub_duration
+    # Subtitle-derived runtime plus a confidence flag. NOTE: this value is only
+    # ever a lower bound (the last spoken cue) and is reliable only when dialogue
+    # runs consistently to near the episode end; sparse dialogue underestimates
+    # it, hence the confidence flag carried alongside.
+    sub_duration, sub_conf, sub_reason = subtitle_duration_with_confidence(cues)
+    return (info, rows, token_stream, token_starts,
+            sub_duration, sub_conf, sub_reason)
 
 
 def _store_fingerprints(db: FingerprintDB, computed, reindex: bool = True,
@@ -133,7 +160,8 @@ def _store_fingerprints(db: FingerprintDB, computed, reindex: bool = True,
     failure it silently falls back to the subtitle-derived duration computed
     during parsing, so a build never stalls or fails because of it.
     """
-    info, rows, token_stream, token_starts, sub_duration = computed
+    info, rows, token_stream, token_starts, sub_duration, sub_conf, sub_reason \
+        = computed
 
     # Resolve the expected episode runtime (seconds). Prefer the authoritative
     # online value when requested; always fall back to the subtitle heuristic so
@@ -154,6 +182,18 @@ def _store_fingerprints(db: FingerprintDB, computed, reindex: bool = True,
                          info.label(), online)
         elif sub_duration:
             logging.debug("  duration (subtitle fallback) %s -> %ds",
+                          info.label(), sub_duration)
+    # When we are relying on the subtitle-derived runtime, surface its
+    # confidence so the user knows how much to trust the stored duration. A
+    # low-confidence subtitle runtime is only a rough lower bound (see
+    # subtitle_duration_with_confidence for the full caveat).
+    if duration_source == "subtitle" and sub_duration:
+        if sub_conf == "low":
+            logging.warning(
+                "  duration (subtitle, LOW confidence) %s -> %ds: %s",
+                info.label(), sub_duration, sub_reason)
+        else:
+            logging.debug("  duration (subtitle, high confidence) %s -> %ds",
                           info.label(), sub_duration)
     info.duration_seconds = duration_seconds
     info.duration_source = duration_source
@@ -405,6 +445,12 @@ def main(argv=None):
                              "concurrently while database writes stay "
                              "serialised, so large libraries build much faster. "
                              "Use 1 to force fully sequential processing.")
+    parser.add_argument("--language", dest="language",
+                        help="Primary language of the subtitles (e.g. en, es, "
+                             "fr, de). When omitted the language is "
+                             "auto-detected per file. A non-English language "
+                             "stores the words directly instead of using the "
+                             "English metaphone encoding.")
     parser.add_argument("--config", help="Path to config.json")
     parser.add_argument("--db", help="Override database path")
     args = parser.parse_args(argv)
@@ -412,6 +458,16 @@ def main(argv=None):
     cfg = load_config(args.config)
     setup_logging(cfg.get("logging", {}).get("level", "INFO"))
     fp_cfg = FingerprintConfig.from_config(cfg)
+    # An explicit --language overrides config and disables per-file
+    # auto-detection; leaving it unset lets _compute_fingerprints detect the
+    # language of each subtitle file individually.
+    if args.language:
+        import dataclasses
+
+        from engine.language_utils import normalise_language
+        _lang = normalise_language(args.language)
+        if _lang:
+            fp_cfg = dataclasses.replace(fp_cfg, language=_lang)
 
     db_path = args.db or cfg.get("database", {}).get("path", "fingerprints.db")
     if not os.path.isabs(db_path):

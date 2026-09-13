@@ -208,7 +208,25 @@ class SettingsInterface(QWidget):
         stt_grid.setHorizontalSpacing(16)
         stt_grid.setVerticalSpacing(10)
 
-        stt_grid.addWidget(BodyLabel("Model size"), 0, 0)
+        # Primary dialogue language. Auto-detect tags each episode from its
+        # subtitles; a specific choice applies everywhere. Drives both the
+        # phonetic matching strategy and which Vosk STT model is used.
+        stt_grid.addWidget(BodyLabel("Primary language"), 0, 0)
+        self.lang_combo = ComboBox()
+        self._lang_labels = ["Auto-detect", "English", "Spanish", "French",
+                             "German", "Other"]
+        self.lang_combo.addItems(self._lang_labels)
+        cur_lang = self.cfg.get("primary_language", "Auto-detect")
+        if cur_lang not in self._lang_labels:
+            cur_lang = "Auto-detect"
+        self.lang_combo.setCurrentText(cur_lang)
+        stt_grid.addWidget(self.lang_combo, 0, 1)
+        stt_grid.addWidget(
+            CaptionLabel("English uses phonetic (metaphone) matching; other "
+                         "languages match on words. Auto-detect needs the "
+                         "optional 'langdetect' package."), 1, 0, 1, 4)
+
+        stt_grid.addWidget(BodyLabel("Model size"), 2, 0)
         self.model_combo = ComboBox()
         self._model_labels = ["Small (39 MB)", "Large (1.8 GB)"]
         self._model_values = ["small", "large"]
@@ -217,21 +235,21 @@ class SettingsInterface(QWidget):
         idx = self._model_values.index(cur_size) if cur_size in self._model_values else 0
         self.model_combo.setCurrentIndex(idx)
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        stt_grid.addWidget(self.model_combo, 0, 1)
+        stt_grid.addWidget(self.model_combo, 2, 1)
 
         # Download / update button + a dedicated Cancel Download button that is
         # only shown while a download is running.
         self.model_download_btn = PushButton("Download", self, FIF.DOWNLOAD)
         self.model_download_btn.clicked.connect(self._start_model_download)
-        stt_grid.addWidget(self.model_download_btn, 0, 2)
+        stt_grid.addWidget(self.model_download_btn, 2, 2)
 
         self.model_cancel_btn = PushButton("Cancel Download", self, FIF.CANCEL)
         self.model_cancel_btn.clicked.connect(self._cancel_model_download)
         self.model_cancel_btn.setVisible(False)
-        stt_grid.addWidget(self.model_cancel_btn, 0, 3)
+        stt_grid.addWidget(self.model_cancel_btn, 2, 3)
 
         self.model_status = CaptionLabel("")
-        stt_grid.addWidget(self.model_status, 1, 1, 1, 3)
+        stt_grid.addWidget(self.model_status, 3, 1, 1, 3)
 
         # Persistent progress bar + percentage caption, styled to match the
         # Identify tab's progress bar (thin, 6 px). Hidden until a download runs
@@ -239,18 +257,18 @@ class SettingsInterface(QWidget):
         self.model_progress = ProgressBar()
         self.model_progress.setFixedHeight(6)
         self.model_progress.setVisible(False)
-        stt_grid.addWidget(self.model_progress, 2, 0, 1, 4)
+        stt_grid.addWidget(self.model_progress, 4, 0, 1, 4)
         # A prominent status readout, e.g.
         # "Downloading vosk-model-small-en-us-0.15... 45%".
         self.model_progress_label = StrongBodyLabel("")
         self.model_progress_label.setVisible(False)
-        stt_grid.addWidget(self.model_progress_label, 3, 0, 1, 4)
+        stt_grid.addWidget(self.model_progress_label, 5, 0, 1, 4)
 
         stt_grid.addWidget(
             CaptionLabel("The large model is far more accurate on clean DVD-rip "
                          "audio but uses ~1.8 GB. Choose a size, then click "
                          "Download. Re-downloading refreshes it to the latest "
-                         "published build."), 4, 0, 1, 4)
+                         "published build."), 6, 0, 1, 4)
         stt_grid.setColumnStretch(1, 1)
         stt_card.addLayout(stt_grid)
         root.addWidget(stt_card)
@@ -279,6 +297,7 @@ class SettingsInterface(QWidget):
         self.theme_combo.currentTextChanged.connect(self._on_field_changed)
         self.workers_spin.valueChanged.connect(self._on_field_changed)
         self.model_combo.currentIndexChanged.connect(self._on_field_changed)
+        self.lang_combo.currentTextChanged.connect(self._on_field_changed)
 
     # ---- unsaved-changes helpers -----------------------------------------
     def _snapshot(self) -> dict:
@@ -289,6 +308,7 @@ class SettingsInterface(QWidget):
             "theme": self.theme_combo.currentText(),
             "max_workers": int(self.workers_spin.value()),
             "vosk_model_size": self._selected_model_size(),
+            "primary_language": self.lang_combo.currentText(),
             "media_extensions": self.exts_edit.text().strip(),
             "ignore_part_format_differences": bool(self.part_switch.isChecked()),
             "view_density": self.density_combo.currentText(),
@@ -722,6 +742,7 @@ class SettingsInterface(QWidget):
             theme=self.theme_combo.currentText(),
             max_workers=int(self.workers_spin.value()),
             vosk_model_size=size,
+            primary_language=self.lang_combo.currentText(),
             media_extensions=self.exts_edit.text().strip() or DEFAULT_MEDIA_EXTS,
             ignore_part_format_differences=bool(self.part_switch.isChecked()),
             view_density=self.density_combo.currentText(),

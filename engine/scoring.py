@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import difflib
 import logging
+import math
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections import Counter
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from fingerprint_core import (
     FingerprintConfig,
     FingerprintDB,
     FuzzyConfig,
+    MatchResult,
     fingerprint_text,
     phonetic_token_stream,
     score_fuzzy_matches,
@@ -31,10 +34,169 @@ from fingerprint_core import (
 
 __all__ = [
     "score_matches", "score_fuzzy_matches",
-    "run_fuzzy_stage", "_load_candidate_streams",
+    "run_fuzzy_stage", "run_ngram_stage", "_load_candidate_streams",
     "_time_weight", "_build_weighted_query", "_norm_title",
     "apply_metadata_boosts", "_adaptive_review_threshold",
+    # Accuracy helpers (word frequency, n-grams, names, dialogue density)
+    "token_ngrams", "ngram_similarity", "document_frequencies", "idf_weights",
+    "extract_character_names", "name_overlap_bonus", "dialogue_density",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Low-overhead accuracy helpers
+#
+# These sit alongside the phonetic scorer and provide independent, cheap signals
+# used by the matcher's n-gram fallback and its tie-break logic. They are all
+# pure functions with no I/O so they are trivially testable and never raise on
+# ordinary input.
+# ---------------------------------------------------------------------------
+
+# A short stop list of high-frequency English function words. They carry almost
+# no discriminating power between episodes, so they are ignored when extracting
+# n-grams and character names (keeping the signal focused on rare, meaningful
+# tokens). Kept intentionally small to stay language-neutral-ish.
+_STOPWORDS = frozenset("""
+a an the and or but if then else of to in on at by for with from into over
+is are was were be been being am do does did have has had will would shall
+should can could may might must i you he she it we they me him her us them my
+your his its our their this that these those as so not no yes at up out off
+""".split())
+
+
+def token_ngrams(tokens: Sequence[str], n: int = 2) -> List[Tuple[str, ...]]:
+    """Return the list of contiguous ``n``-grams over ``tokens``.
+
+    Works on any token sequence (raw words or phonetic codes). For ``n`` larger
+    than the input length an empty list is returned. Unigrams (``n == 1``) are
+    returned as 1-tuples so all callers get a uniform shape.
+    """
+    if n < 1 or len(tokens) < n:
+        return []
+    return [tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)]
+
+
+def ngram_similarity(a: Sequence[str], b: Sequence[str], n: int = 2,
+                     weights: Optional[Dict[str, float]] = None) -> float:
+    """Weighted Dice similarity between the ``n``-gram *sets* of two sequences.
+
+    Returns a value in ``[0.0, 1.0]``. When ``weights`` (a token -> weight map,
+    e.g. IDF weights from :func:`idf_weights`) is supplied, each shared n-gram
+    contributes the average weight of its member tokens, so rare/discriminative
+    tokens dominate the score and boilerplate contributes little. Unweighted, it
+    is the classic set Dice coefficient. Order-independent, so it complements the
+    order-preserving LCS fuzzy scorer as a second opinion.
+    """
+    ga = set(token_ngrams(list(a), n))
+    gb = set(token_ngrams(list(b), n))
+    if not ga or not gb:
+        return 0.0
+
+    def _gram_weight(gram: Tuple[str, ...]) -> float:
+        if not weights:
+            return 1.0
+        vals = [weights.get(t, 1.0) for t in gram]
+        return sum(vals) / len(vals) if vals else 1.0
+
+    shared = ga & gb
+    inter = sum(_gram_weight(g) for g in shared)
+    total = sum(_gram_weight(g) for g in ga) + sum(_gram_weight(g) for g in gb)
+    if total <= 0:
+        return 0.0
+    return (2.0 * inter) / total
+
+
+def document_frequencies(docs: Iterable[Sequence[str]]) -> Tuple[Dict[str, int], int]:
+    """Return ``(token -> number of docs containing it, total doc count)``.
+
+    Each document is a token sequence; a token is counted at most once per
+    document. Used to derive corpus-wide rarity for :func:`idf_weights`.
+    """
+    df: Counter = Counter()
+    n_docs = 0
+    for doc in docs:
+        n_docs += 1
+        for tok in set(doc):
+            df[tok] += 1
+    return dict(df), n_docs
+
+
+def idf_weights(df: Dict[str, int], n_docs: int) -> Dict[str, float]:
+    """Smoothed inverse-document-frequency weight per token.
+
+    ``weight = ln((1 + n_docs) / (1 + df)) + 1`` so a token appearing in every
+    episode tends toward ~1.0 while a token unique to one episode gets the
+    largest weight. Rare words are therefore the strongest match evidence, which
+    is exactly what we want when disambiguating similar episodes.
+    """
+    weights: Dict[str, float] = {}
+    for tok, count in df.items():
+        weights[tok] = math.log((1.0 + n_docs) / (1.0 + count)) + 1.0
+    return weights
+
+
+# Capitalised word (a likely proper noun / character name). Applied to raw
+# transcript text, NOT phonetic tokens (which have lost their casing).
+_CAP_WORD_RE = re.compile(r"\b([A-Z][a-z]{2,})\b")
+
+
+def extract_character_names(text: str, min_count: int = 1) -> Dict[str, int]:
+    """Extract likely character / proper-noun names from raw transcript text.
+
+    Returns ``{name_lowercased: occurrence_count}``. Heuristic: capitalised
+    words of 3+ letters that are not common stop words and not the first word of
+    a sentence (sentence-initial capitals are usually ordinary words). Shows
+    repeat character names constantly, so a strong overlap of names between a
+    query transcript and a reference is a good same-episode signal.
+
+    ``min_count`` filters out names seen fewer than this many times.
+    """
+    if not text:
+        return {}
+    counts: Counter = Counter()
+    # Split into rough sentences so we can drop sentence-initial capitals.
+    for sentence in re.split(r"[.!?]+", text):
+        words = sentence.split()
+        for idx, raw in enumerate(words):
+            m = _CAP_WORD_RE.match(raw)
+            if not m:
+                continue
+            if idx == 0:
+                continue  # sentence-initial capital: usually not a name
+            name = m.group(1).lower()
+            if name in _STOPWORDS:
+                continue
+            counts[name] += 1
+    return {k: v for k, v in counts.items() if v >= min_count}
+
+
+def name_overlap_bonus(query_names: Dict[str, int],
+                       ref_names: Dict[str, int], cap: float = 0.10) -> float:
+    """Confidence bonus (0..``cap``) from shared character names.
+
+    Scaled by the fraction of the query's names that also appear in the
+    reference. Returns 0.0 when either side has no detected names, so it is a
+    purely additive signal that never penalises.
+    """
+    if not query_names or not ref_names:
+        return 0.0
+    shared = set(query_names) & set(ref_names)
+    if not shared:
+        return 0.0
+    frac = len(shared) / float(len(query_names))
+    return min(cap, cap * frac)
+
+
+def dialogue_density(word_count: int, duration_seconds: float) -> float:
+    """Words per minute of dialogue, or 0.0 when duration is unknown.
+
+    A cheap secondary signal: two recordings of the same episode should have a
+    similar spoken-word rate. It is only ever used to break near-ties, never to
+    override the phonetic verdict.
+    """
+    if duration_seconds <= 0 or word_count <= 0:
+        return 0.0
+    return word_count / (duration_seconds / 60.0)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +266,68 @@ def run_fuzzy_stage(query_text: str, db: FingerprintDB,
                          fuzzy_cfg.min_margin * 100)
             return [], fuzzy_cfg
     return results, fuzzy_cfg
+
+
+def run_ngram_stage(query_text: str, db: FingerprintDB,
+                    fp_cfg: FingerprintConfig, cfg: dict,
+                    candidate_ids: Optional[Iterable[int]] = None,
+                    n: int = 2, min_similarity: float = 0.20,
+                    min_margin: float = 0.05) -> List[Any]:
+    """Last-resort word/token n-gram similarity fallback.
+
+    Runs only when the exact and fuzzy stages have failed or are weak. Unlike the
+    order-preserving LCS fuzzy scorer, this compares the *set* of phonetic-token
+    n-grams (order-independent) with IDF weighting so rare, discriminative tokens
+    dominate. This recovers matches where STT dropped or reordered words badly
+    enough to defeat LCS, at the cost of precision, so it is gated behind a
+    similarity floor and a winner-vs-runner-up margin and is reported as the
+    weaker ``ngram`` method.
+
+    Returns a list of :class:`MatchResult` (possibly empty), best first.
+    """
+    if not query_text or not query_text.strip():
+        return []
+    q_tokens = phonetic_token_stream(query_text, fp_cfg)
+    if len(q_tokens) < max(n + 1, 4):
+        return []
+
+    scope = list(candidate_ids) if candidate_ids else []
+    streams = _load_candidate_streams(db, scope, fp_cfg) if scope else {}
+    if not streams:
+        streams = _load_candidate_streams(
+            db, db.all_token_stream_media_ids(), fp_cfg)
+    if not streams:
+        return []
+
+    # IDF weights over the reference corpus so common tokens count for little.
+    df, n_docs = document_frequencies(toks for (_i, toks, _s) in streams.values())
+    weights = idf_weights(df, n_docs)
+
+    scored: List[MatchResult] = []
+    for mid, (info, ref_tokens, _starts) in streams.items():
+        sim = ngram_similarity(q_tokens, ref_tokens, n=n, weights=weights)
+        if sim <= 0:
+            continue
+        # Approximate the shared n-gram count for the caller's evidence display.
+        shared = len(set(token_ngrams(q_tokens, n)) & set(token_ngrams(ref_tokens, n)))
+        scored.append(MatchResult(
+            media=info, media_id=mid, confidence=min(1.0, sim),
+            match_count=shared, query_count=max(1, len(q_tokens) - n + 1)))
+
+    if not scored:
+        return []
+    scored.sort(key=lambda r: (r.confidence, r.match_count), reverse=True)
+    top_k = cfg.get("matching", {}).get("top_n_results", 5)
+    scored = scored[:top_k]
+
+    if scored[0].confidence < min_similarity:
+        return []
+    # Ambiguity gate: require a clear winner, mirroring the fuzzy stage.
+    if len(scored) >= 2 and (scored[0].confidence - scored[1].confidence) < min_margin:
+        logging.info("  ngram: ambiguous (%.0f%% vs %.0f%%) - rejecting",
+                     scored[0].confidence * 100, scored[1].confidence * 100)
+        return []
+    return scored
 
 
 # ---------------------------------------------------------------------------

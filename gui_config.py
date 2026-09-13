@@ -37,6 +37,12 @@ DEFAULTS: Dict[str, Any] = {
     "max_workers": 4,           # files identified in parallel
     "review_confidence": 0.35,
     "vosk_model_size": "small",  # "small" (~40MB) | "large" (~1.8GB, accurate)
+    # Primary dialogue language of the library. "Auto-detect" lets the build
+    # detect each episode's language; a specific choice applies it everywhere.
+    # Drives the phonetic strategy (metaphone for English, raw words otherwise)
+    # and Vosk model selection. One of: Auto-detect | English | Spanish |
+    # French | German | Other.
+    "primary_language": "Auto-detect",
     "last_show_title": "",      # last TV show used for batch library import
     "theme": "Dark",            # "Dark" | "Light" | "Auto"
     "theme_color": "#0078d4",   # Windows 11 accent blue

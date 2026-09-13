@@ -153,3 +153,74 @@ def subtitle_duration_fallback(cues: List[Tuple[int, int, str]]
     if last_end_ms <= 0:
         return None
     return int(round(last_end_ms / 1000.0))
+
+
+# Words per minute below which a subtitle-derived runtime is treated as low
+# confidence. Sparse dialogue means the last spoken cue may sit well before the
+# true episode end, so the timestamp underestimates the real runtime.
+SUBTITLE_SPARSE_WPM = 40.0
+
+# Largest tolerated silent gap (seconds) anywhere between consecutive cues. A
+# long mid-episode silence hints at stretches the subtitle timeline does not
+# cover well, which also lowers confidence in the derived runtime.
+SUBTITLE_MAX_GAP_S = 120.0
+
+
+def subtitle_duration_with_confidence(
+        cues: List[Tuple[int, int, str]]
+) -> Tuple[Optional[int], str, str]:
+    """Approximate an episode's runtime (seconds) AND rate how much to trust it.
+
+    Returns ``(seconds, confidence, reason)`` where ``confidence`` is
+    ``"high"`` or ``"low"`` and ``reason`` is a short human-readable note.
+    ``seconds`` is ``None`` (with ``confidence == "low"``) when no usable
+    duration can be derived.
+
+    IMPORTANT CAVEAT - a subtitle-derived runtime is only ever a *lower bound*.
+    It is the end timestamp of the last spoken cue, so any silent tail (action
+    sequences, long musical outros, end credits without dialogue) is invisible
+    to it and the real episode is longer. It is therefore trustworthy only when
+    dialogue runs consistently and densely all the way to near the end. When
+    dialogue is sparse (few words per minute) or the timeline has long silent
+    gaps, the estimate can badly underestimate the true runtime, so this
+    function flags it ``"low"`` confidence and callers should treat the value as
+    a rough approximation only - never as an authoritative runtime.
+    """
+    seconds = subtitle_duration_fallback(cues)
+    if seconds is None or seconds <= 0:
+        return None, "low", "no usable subtitle timestamps"
+
+    try:
+        # Words per minute across the whole subtitle span.
+        word_count = sum(len(str(c[2]).split()) for c in cues
+                         if c and len(c) >= 3 and c[2])
+        wpm = word_count / (seconds / 60.0) if seconds > 0 else 0.0
+
+        # Largest silent gap between the end of one cue and the start of the
+        # next (cues are assumed to be in chronological order).
+        max_gap_s = 0.0
+        prev_end = None
+        for c in cues:
+            if not c or c[0] is None or c[1] is None:
+                continue
+            start_ms, end_ms = int(c[0]), int(c[1])
+            if prev_end is not None and start_ms > prev_end:
+                gap_s = (start_ms - prev_end) / 1000.0
+                if gap_s > max_gap_s:
+                    max_gap_s = gap_s
+            prev_end = end_ms
+    except (ValueError, TypeError, IndexError):
+        # Malformed cues: return the value but be honest that we cannot vouch
+        # for it.
+        return seconds, "low", "subtitle cues malformed; runtime approximate"
+
+    if wpm < SUBTITLE_SPARSE_WPM:
+        return (seconds, "low",
+                f"sparse dialogue ({wpm:.0f} wpm); runtime is a lower bound and "
+                "likely underestimates the true length")
+    if max_gap_s > SUBTITLE_MAX_GAP_S:
+        return (seconds, "low",
+                f"long silent gap ({max_gap_s:.0f}s) in subtitles; runtime "
+                "approximate")
+    return (seconds, "high",
+            "dialogue runs consistently; runtime is a reliable lower bound")

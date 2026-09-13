@@ -51,9 +51,12 @@ except Exception:  # pragma: no cover - only if deps are absent
     FingerprintDB = None
 
 
-# Table columns (media_id is stashed on the first column via Qt.UserRole).
-_COLS = ["Show", "Episode title", "Type", "Season", "Episode", "Duration",
+# Table columns. Column 0 is a checkbox used for multi-row (bulk) selection;
+# the media_id is stashed on that checkbox cell via Qt.UserRole.
+_COLS = ["", "Show", "Episode title", "Type", "Season", "Episode", "Duration",
          "Fingerprints"]
+# Index of the first data column (everything after the checkbox column).
+_CHECK_COL = 0
 
 
 class EditEpisodeDialog(MessageBoxBase):
@@ -164,10 +167,28 @@ class LibraryInterface(QWidget):
         self.edit_btn.clicked.connect(self._edit_selected)
         top.addWidget(self.edit_btn)
 
-        self.delete_btn = PrimaryPushButton("Delete", self, FIF.DELETE)
+        self.delete_btn = PushButton("Delete", self, FIF.DELETE)
         self.delete_btn.clicked.connect(self._delete_selected)
         top.addWidget(self.delete_btn)
+
+        # Bulk deletion: delete every checkbox-ticked row in one confirmed pass.
+        self.delete_sel_btn = PrimaryPushButton("Delete selected", self,
+                                                FIF.DELETE)
+        self.delete_sel_btn.clicked.connect(self._delete_checked)
+        top.addWidget(self.delete_sel_btn)
         root.addLayout(top)
+
+        # Secondary row: select-all / clear helpers for the checkbox column.
+        selrow = QHBoxLayout()
+        selrow.setSpacing(8)
+        self.select_all_btn = PushButton("Select all", self)
+        self.select_all_btn.clicked.connect(lambda: self._set_all_checked(True))
+        selrow.addWidget(self.select_all_btn)
+        self.clear_sel_btn = PushButton("Clear selection", self)
+        self.clear_sel_btn.clicked.connect(lambda: self._set_all_checked(False))
+        selrow.addWidget(self.clear_sel_btn)
+        selrow.addStretch(1)
+        root.addLayout(selrow)
 
         # Table
         self.table = TableWidget(self)
@@ -179,9 +200,12 @@ class LibraryInterface(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setWordWrap(False)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        for c in range(2, len(_COLS)):
+        # Checkbox column: fixed, narrow. Show / Episode-title: stretch. Rest: fit.
+        header.setSectionResizeMode(_CHECK_COL, QHeaderView.Fixed)
+        self.table.setColumnWidth(_CHECK_COL, 36)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)   # Show
+        header.setSectionResizeMode(2, QHeaderView.Stretch)   # Episode title
+        for c in range(3, len(_COLS)):
             header.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         self.table.doubleClicked.connect(lambda _idx: self._edit_selected())
         root.addWidget(self.table, 1)
@@ -272,6 +296,17 @@ class LibraryInterface(QWidget):
         for d in rows:
             r = self.table.rowCount()
             self.table.insertRow(r)
+
+            # Column 0: user-checkable cell for bulk selection. The media id is
+            # stashed here so checked rows can be resolved back to ids.
+            check = QTableWidgetItem()
+            check.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled
+                           | Qt.ItemIsSelectable)
+            check.setCheckState(Qt.Unchecked)
+            check.setData(Qt.UserRole, d.get("id"))
+            check.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(r, _CHECK_COL, check)
+
             dur = d.get("duration_seconds")
             dur_str = f"{int(dur)//60} min" if dur else "-"
             values = [
@@ -283,12 +318,13 @@ class LibraryInterface(QWidget):
                 dur_str,
                 str(d.get("_fp_count", 0)),
             ]
-            for c, val in enumerate(values):
+            # Data cells start at column 1 (after the checkbox column).
+            for offset, val in enumerate(values):
+                c = offset + 1
                 item = QTableWidgetItem(val)
-                if c == 0:
-                    # Stash the media id on the first cell for later lookup.
-                    item.setData(Qt.UserRole, d.get("id"))
-                if c >= 2:
+                # "Type" onwards (Type/Season/Episode/Duration/Fingerprints)
+                # are centred; Show / Episode-title stay left-aligned.
+                if c >= 3:
                     item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, c, item)
         self.count_label.setText(
@@ -383,6 +419,73 @@ class LibraryInterface(QWidget):
         InfoBar.success(
             "Episode deleted", "The reference entry was removed.",
             duration=4000, position=InfoBarPosition.TOP, parent=self)
+        self.reload()
+
+    # ------------------------------------------------------------------
+    # Bulk (checkbox) selection + deletion
+    # ------------------------------------------------------------------
+    def _set_all_checked(self, checked: bool):
+        """Tick or clear the checkbox on every currently visible row."""
+        state = Qt.Checked if checked else Qt.Unchecked
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, _CHECK_COL)
+            if item is not None:
+                item.setCheckState(state)
+
+    def _checked_media_ids(self) -> List[int]:
+        """Return the media ids of every checkbox-ticked visible row."""
+        ids: List[int] = []
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, _CHECK_COL)
+            if item is not None and item.checkState() == Qt.Checked:
+                mid = item.data(Qt.UserRole)
+                if mid is not None:
+                    ids.append(mid)
+        return ids
+
+    def _delete_checked(self):
+        """Delete every checkbox-ticked episode after a single confirmation."""
+        ids = self._checked_media_ids()
+        if not ids:
+            self._info("Tick the checkbox on one or more episodes first, "
+                       "then use Delete selected.")
+            return
+        count = len(ids)
+        box = MessageBox(
+            "Delete selected episodes",
+            f"Delete {count} selected "
+            f"{'episode' if count == 1 else 'episodes'} and all of their "
+            "fingerprints from the database?\n\nThis cannot be undone.",
+            self.win)
+        box.yesButton.setText(f"Delete {count}")
+        box.cancelButton.setText("Cancel")
+        if not box.exec():
+            return
+        db = self._open_db()
+        if db is None:
+            return
+        deleted = 0
+        failed = 0
+        try:
+            for mid in ids:
+                try:
+                    if db.delete_media(mid):
+                        deleted += 1
+                except Exception:  # keep going; report the tally at the end
+                    failed += 1
+        finally:
+            db.close()
+        if failed:
+            InfoBar.warning(
+                "Partial deletion",
+                f"Deleted {deleted} of {count}; {failed} could not be removed.",
+                duration=6000, position=InfoBarPosition.TOP, parent=self)
+        else:
+            InfoBar.success(
+                "Episodes deleted",
+                f"Removed {deleted} reference "
+                f"{'episode' if deleted == 1 else 'episodes'}.",
+                duration=4000, position=InfoBarPosition.TOP, parent=self)
         self.reload()
 
     def _info(self, msg: str):

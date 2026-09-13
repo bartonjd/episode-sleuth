@@ -38,6 +38,25 @@ except Exception:  # pragma: no cover - only if pydub/vosk deps are absent
         pass
 
 
+def _resolve_primary_language(label):
+    """Translate the Settings "Primary Language" choice into an ISO code.
+
+    "Auto-detect" (or a missing/empty value) returns None, which leaves the
+    engine on its English/metaphone default - the right behaviour for a
+    single-language English library. Any other choice is normalised to an ISO
+    code ("en"/"es"/"fr"/"de"/"other") so the query is encoded the same way the
+    reference library was built. Any failure falls back to None so a bad value
+    never blocks an identify run.
+    """
+    if not label or str(label).strip().lower() in ("auto-detect", "auto"):
+        return None
+    try:
+        from engine.language_utils import normalise_language
+        return normalise_language(label)
+    except Exception:
+        return None
+
+
 class IdentifyWorker(QThread):
     rowReady = Signal(object)          # FileResult
     progress = Signal(int, int, int, str)  # current, total, percent, filename
@@ -66,6 +85,17 @@ class IdentifyWorker(QThread):
                 # Let the size selector resolve the model dir; drop any hardcoded
                 # small path so the large model is used when it is downloaded.
                 cfg["stt"].pop("vosk_model_path", None)
+            # Honour the Primary Language chosen in Settings. A specific language
+            # (not "Auto-detect") sets the phonetic strategy and the Vosk model
+            # language for the whole identify run so the query is encoded the
+            # same way the reference library was built. "Auto-detect" leaves the
+            # language unset (English/metaphone default), which is the right
+            # behaviour for identifying against a single-language English library.
+            _lang = _resolve_primary_language(
+                getattr(self.params, "primary_language", None))
+            if _lang:
+                cfg.setdefault("fingerprint", {})["language"] = _lang
+                cfg["stt"]["language"] = _lang
             fp_cfg = FingerprintConfig.from_config(cfg)
 
             args = SimpleNamespace(

@@ -28,7 +28,9 @@ from .scoring import (
     _adaptive_review_threshold,
     _build_weighted_query,
     apply_metadata_boosts,
+    dialogue_density,
     run_fuzzy_stage,
+    run_ngram_stage,
 )
 from .types import EpisodeGuess, FileResult
 
@@ -192,6 +194,48 @@ def _duration_tie_break(results: List[Any], db: Any, file_duration_s: float) -> 
         return
 
 
+def _density_tie_break(results: List[Any], db: Any, query_word_count: int,
+                       file_duration_s: float) -> None:
+    """Reorder a near-tied ``results`` list to prefer the closer dialogue density.
+
+    Two recordings of the same episode should have a similar spoken-word rate
+    (words per minute). When the top two candidates score almost identically,
+    the one whose stored dialogue density is closest to this file's measured
+    density is the marginally better bet. This is a weak secondary signal used
+    only to settle a near-tie after the duration tie-break; it never overrides
+    the phonetic verdict and never raises.
+    """
+    if len(results) < 2 or file_duration_s <= 0 or query_word_count <= 0:
+        return
+    try:
+        q_density = dialogue_density(query_word_count, file_duration_s)
+        if q_density <= 0:
+            return
+        pair = results[:2]
+        best_i = None
+        best_diff = None
+        for i, r in enumerate(pair):
+            minfo = db.media_info(r.media_id)
+            exp = minfo.duration_seconds if minfo is not None else None
+            if not exp or exp <= 0:
+                continue
+            tokens, _starts = db.get_token_stream(r.media_id)
+            if not tokens:
+                continue
+            r_density = dialogue_density(len(tokens), float(exp))
+            if r_density <= 0:
+                continue
+            diff = abs(q_density - r_density)
+            if best_diff is None or diff < best_diff:
+                best_diff = diff
+                best_i = i
+        # Promote the second candidate only if it is the closer density match.
+        if best_i == 1:
+            results[0], results[1] = results[1], results[0]
+    except Exception:  # a tie-break must never break identification
+        return
+
+
 # ---------------------------------------------------------------------------
 # Orchestration for one file
 # ---------------------------------------------------------------------------
@@ -278,6 +322,10 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                         and (results[0].confidence - results[1].confidence)
                         < min_margin):
                     _duration_tie_break(results, db, duration)
+                    # If still a near-tie after duration, fall back to comparing
+                    # dialogue density (words per minute) as a weak tie-break.
+                    if (results[0].confidence - results[1].confidence) < min_margin:
+                        _density_tie_break(results, db, len(text.split()), duration)
                 m = results[0].media
                 if notes:
                     notes_parts.append(", ".join(notes))
@@ -316,6 +364,41 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                     )
                     best_match_count = fuzzy_results[0].match_count
                     best_media_id = fuzzy_results[0].media_id
+
+            # Stage 3: order-independent phonetic n-gram fallback. Only runs when
+            # the earlier stages found nothing or only a weak (<40%) guess. It
+            # compares the SET of IDF-weighted phonetic n-grams, so it can still
+            # recover a match when STT scrambled the word order badly enough to
+            # defeat the ordered exact/fuzzy scorers. It is deliberately gated
+            # (similarity floor + winner margin, inside run_ngram_stage) and only
+            # replaces the current guess when it scores strictly higher, so it
+            # never downgrades a stronger earlier verdict.
+            if best is None or best.mean_confidence < 0.40:
+                ngram_results = run_ngram_stage(text, db, fp_cfg, cfg, [])
+                if ngram_results and (
+                        best is None
+                        or ngram_results[0].confidence > best.mean_confidence):
+                    notes = apply_metadata_boosts(
+                        ngram_results, expected_show, query_episode_title)
+                    boosted = bool(notes)
+                    cand = ngram_results[0]
+                    m = cand.media
+                    if notes:
+                        notes_parts.append(", ".join(notes))
+                    best = EpisodeGuess(
+                        episode_id=episode_id_str(m.season, m.episode),
+                        title=(getattr(m, "show_title", None) or m.title),
+                        season=m.season, episode=m.episode,
+                        votes=got, total_samples=len(windows),
+                        mean_confidence=cand.confidence, method="ngram",
+                        episode_title=(getattr(m, "episode_title", None) or ""),
+                    )
+                    best_match_count = cand.match_count
+                    best_media_id = cand.media_id
+                    if len(ngram_results) >= 2:
+                        runner_up_margin = (ngram_results[0].confidence
+                                            - ngram_results[1].confidence)
+                    notes_parts.append("matched via n-gram fallback")
         elif transcriber is not None:
             notes_parts.append("no speech recognised")
 

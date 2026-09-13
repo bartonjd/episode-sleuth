@@ -57,7 +57,24 @@ def _require_pydub():
 # Known Vosk English models keyed by a friendly "size" (see constants.py). The
 # small model is the default (fast, ~40 MB); the large model is far more
 # accurate on clean audio (~1.8 GB) and pushes DVD-rip confidence higher.
-from constants import DEFAULT_MODELS_DIR, VOSK_MODELS  # noqa: E402
+from constants import (  # noqa: E402
+    DEFAULT_MODELS_DIR,
+    VOSK_MODELS,
+    VOSK_MODELS_BY_LANG,
+)
+
+
+def _resolve_model_spec(model_size: str, language: Optional[str] = None) -> dict:
+    """Return the Vosk model spec for a ``(size, language)`` pair.
+
+    ``language`` is an ISO 639-1 code ("en", "es", "fr", "de"); ``None`` or an
+    unknown language falls back to English so existing behaviour is unchanged.
+    An unknown size falls back to that language's "small" model.
+    """
+    size = (model_size or "small").lower()
+    lang = (language or "en").lower().split("-")[0]
+    lang_models = VOSK_MODELS_BY_LANG.get(lang, VOSK_MODELS)
+    return lang_models.get(size) or lang_models.get("small") or VOSK_MODELS["small"]
 
 # ---------------------------------------------------------------------------
 # Suppress ffmpeg/ffprobe console windows on Windows
@@ -227,18 +244,18 @@ def _model_search_bases() -> List[str]:
     return out
 
 
-def get_model_path(model_size: str = "small", models_dir: Optional[str] = None
-                   ) -> Optional[str]:
+def get_model_path(model_size: str = "small", models_dir: Optional[str] = None,
+                   language: Optional[str] = None) -> Optional[str]:
     """Return the local path to the Vosk model for ``model_size`` if present.
 
-    ``model_size`` is "small" or "large". When ``models_dir`` is given, only
-    that directory is checked; otherwise every persistent/bundled model
-    location is searched (see :func:`_model_search_bases`). Returns the
-    directory path if the model exists on disk, else ``None`` (call
-    :func:`download_vosk_model` to fetch it).
+    ``model_size`` is "small" or "large". ``language`` is an ISO 639-1 code
+    ("en", "es", "fr", "de"); ``None`` or unknown means English (unchanged
+    default). When ``models_dir`` is given, only that directory is checked;
+    otherwise every persistent/bundled model location is searched (see
+    :func:`_model_search_bases`). Returns the directory path if the model exists
+    on disk, else ``None`` (call :func:`download_vosk_model` to fetch it).
     """
-    size = (model_size or "small").lower()
-    spec = VOSK_MODELS.get(size, VOSK_MODELS["small"])
+    spec = _resolve_model_spec(model_size, language)
     bases = [models_dir] if models_dir else _model_search_bases()
     for base in bases:
         path = os.path.join(base, spec["dir"])
@@ -255,7 +272,8 @@ def download_vosk_model(model_size: str = "large",
                         models_dir: Optional[str] = None,
                         progress: Optional[Callable[[int, int], None]] = None,
                         force: bool = False,
-                        cancel_check: Optional[Callable[[], bool]] = None
+                        cancel_check: Optional[Callable[[], bool]] = None,
+                        language: Optional[str] = None
                         ) -> str:
     """Download and unzip a Vosk model, returning the local model directory.
 
@@ -275,7 +293,7 @@ def download_vosk_model(model_size: str = "large",
     (the cause of the "zip failed to initialise" error on the large model).
     """
     size = (model_size or "large").lower()
-    spec = VOSK_MODELS.get(size)
+    spec = _resolve_model_spec(size, language)
     if spec is None:
         raise ValueError(f"Unknown Vosk model size: {model_size!r} "
                          f"(known: {', '.join(VOSK_MODELS)})")
@@ -386,31 +404,56 @@ def get_transcriber(cfg: dict):
 
     For Vosk the model is selected in priority order:
       1. an explicit ``stt.vosk_model_path`` (backward compatible), else
-      2. ``stt.model_size`` ("small" / "large") resolved under ``models/``.
+      2. ``stt.model_size`` ("small" / "large") resolved under ``models/`` for
+         the configured language.
 
-    If the selected model is missing, it is auto-downloaded (the large model
-    is ~1.8 GB so this may take a few minutes on first use).
+    The language is taken from ``stt.language`` if set, else from the library's
+    Primary Language (``fingerprint.language``), else English. This lets a
+    non-English library transcribe in its own language instead of forcing
+    English STT. If the selected model is missing, it is auto-downloaded (the
+    large model is ~1.8 GB so this may take a few minutes on first use).
     """
     stt_cfg = cfg.get("stt", {})
     engine = stt_cfg.get("engine", "vosk").lower()
     sample_rate = cfg.get("audio", {}).get("sample_rate", 16000)
+    # Resolve the STT language: explicit stt.language wins, else fall back to the
+    # library Primary Language, else English. Normalised to a bare ISO code.
+    raw_lang = (stt_cfg.get("language")
+                or cfg.get("fingerprint", {}).get("language"))
+    try:
+        from engine.language_utils import normalise_language
+        language = normalise_language(raw_lang) or "en"
+    except Exception:
+        language = "en"
+    if language == "other":
+        # A non-English language we do not ship a Vosk model for: fall back to
+        # English STT rather than failing, and let the user point at a custom
+        # model via stt.vosk_model_path if they have one.
+        language = "en"
     if engine == "vosk":
         model_size = str(stt_cfg.get("model_size", "small")).lower()
         model_path = stt_cfg.get("vosk_model_path")
         if not model_path:
-            resolved = get_model_path(model_size)
+            resolved = get_model_path(model_size, language=language)
             if not resolved:
                 # Model missing - auto-download it before proceeding.
-                logging.warning("Vosk %s model not found, downloading...", model_size)
-                resolved = download_vosk_model(model_size)
+                logging.warning("Vosk %s (%s) model not found, downloading...",
+                                model_size, language)
+                resolved = download_vosk_model(model_size, language=language)
             model_path = resolved
         elif model_size == "large":
             # An explicit small path but a large size selected: prefer the large
             # model if it is actually downloaded, else keep the explicit path.
-            resolved = get_model_path("large")
+            resolved = get_model_path("large", language=language)
             if resolved:
                 model_path = resolved
         return VoskTranscriber(model_path, sample_rate)
     if engine == "google":
-        return GoogleTranscriber(stt_cfg.get("google_language", "en-US"))
+        # Prefer an explicit google_language, else derive one from the library
+        # language (e.g. "es" -> "es-ES"), else the historical en-US default.
+        google_lang = stt_cfg.get("google_language")
+        if not google_lang:
+            _map = {"en": "en-US", "es": "es-ES", "fr": "fr-FR", "de": "de-DE"}
+            google_lang = _map.get(language, "en-US")
+        return GoogleTranscriber(google_lang)
     raise ValueError(f"Unknown STT engine: {engine}")

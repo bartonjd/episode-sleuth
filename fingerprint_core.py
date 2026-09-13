@@ -184,7 +184,19 @@ def phonetic_encode_word(word: str, primary_only: bool = False) -> str:
     return primary or secondary
 
 
-def phonetic_tokens(words: Iterable[str], primary_only: bool = False) -> List[str]:
+def phonetic_tokens(words: Iterable[str], primary_only: bool = False,
+                    use_metaphone: bool = True) -> List[str]:
+    """Encode a word sequence into match tokens.
+
+    With ``use_metaphone`` (the default, and what English libraries have always
+    used) each word is Double-Metaphone encoded. For non-English dialogue,
+    metaphone - which models English spelling - is a poor fit, so callers pass
+    ``use_metaphone=False`` to match on the raw normalised words instead. The
+    words are already lower-cased and stripped of punctuation by ``tokenize``,
+    so raw matching is a sane, language-neutral fallback.
+    """
+    if not use_metaphone:
+        return list(words)
     return [phonetic_encode_word(w, primary_only) for w in words]
 
 
@@ -213,6 +225,9 @@ class FingerprintConfig:
     drop_stopwords: bool = False
     hash_algorithm: str = "md5"
     hash_length: int = 16
+    # Dialogue language as an ISO 639-1 code (or None = assume English). Drives
+    # whether Double-Metaphone or raw-word matching is used for encoding.
+    language: Optional[str] = None
 
     @classmethod
     def from_config(cls, cfg: dict) -> "FingerprintConfig":
@@ -224,7 +239,23 @@ class FingerprintConfig:
             drop_stopwords=fp.get("drop_stopwords", False),
             hash_algorithm=fp.get("hash_algorithm", "md5"),
             hash_length=fp.get("hash_length", 16),
+            language=fp.get("language"),
         )
+
+    def use_metaphone(self) -> bool:
+        """Whether to Double-Metaphone encode (English) or match raw words.
+
+        Kept as a method (not a stored flag) so it always reflects the current
+        ``language``. Defaults to True for English / unknown, preserving the
+        historical behaviour of every existing English library.
+        """
+        try:
+            from engine.language_utils import uses_metaphone
+            return uses_metaphone(self.language)
+        except Exception:
+            # If the language helper is unavailable for any reason, fall back to
+            # the historical metaphone default so matching never breaks.
+            return True
 
 
 def fingerprint_text(text: str, cfg: FingerprintConfig) -> List[Tuple[str, int]]:
@@ -234,7 +265,7 @@ def fingerprint_text(text: str, cfg: FingerprintConfig) -> List[Tuple[str, int]]
     that the encoding is identical on both sides of a match.
     """
     tokens = tokenize(text, cfg.min_word_length, cfg.drop_stopwords)
-    ph = phonetic_tokens(tokens, cfg.metaphone_primary_only)
+    ph = phonetic_tokens(tokens, cfg.metaphone_primary_only, cfg.use_metaphone())
     results: List[Tuple[str, int]] = []
     for size in cfg.shingle_sizes:
         for sh in make_shingles(ph, size):
@@ -252,7 +283,7 @@ def phonetic_token_stream(text: str, cfg: FingerprintConfig) -> List[str]:
     opaque shingle hashes.
     """
     tokens = tokenize(text, cfg.min_word_length, cfg.drop_stopwords)
-    return phonetic_tokens(tokens, cfg.metaphone_primary_only)
+    return phonetic_tokens(tokens, cfg.metaphone_primary_only, cfg.use_metaphone())
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +302,8 @@ class MediaInfo:
     episode_title: Optional[str] = None  # parsed episode title (e.g. "The Diner")
     duration_seconds: Optional[int] = None  # expected episode runtime (seconds)
     duration_source: Optional[str] = None   # "tvmaze" (authoritative) or "subtitle" (fallback)
+    # ISO 639-1 code of the dialogue ("en", "es", "fr", "de", ...); None = English.
+    language: Optional[str] = None
 
     def label(self) -> str:
         y = f" ({self.year})" if self.year else ""
@@ -403,6 +436,11 @@ class FingerprintDB:
         # review flag at match time.
         if "duration_source" not in existing_cols:
             cur.execute("ALTER TABLE media ADD COLUMN duration_source TEXT")
+        # ``language`` records the detected/declared dialogue language as an ISO
+        # 639-1 code ("en", "es", "fr", "de", ...). Older rows default to NULL
+        # (unknown), which the matcher treats as "assume English/metaphone".
+        if "language" not in existing_cols:
+            cur.execute("ALTER TABLE media ADD COLUMN language TEXT")
 
         self.conn.commit()
 
@@ -420,25 +458,28 @@ class FingerprintDB:
             # columns if this row was created before they existed (or was
             # imported without them). COALESCE keeps any existing value.
             if (info.show_title is not None or info.episode_title is not None
-                    or info.duration_seconds is not None):
+                    or info.duration_seconds is not None
+                    or info.language is not None):
                 cur.execute(
                     "UPDATE media SET show_title=COALESCE(?, show_title), "
                     "episode_title=COALESCE(?, episode_title), "
                     "duration_seconds=COALESCE(?, duration_seconds), "
-                    "duration_source=COALESCE(?, duration_source) WHERE id=?",
+                    "duration_source=COALESCE(?, duration_source), "
+                    "language=COALESCE(?, language) WHERE id=?",
                     (info.show_title, info.episode_title,
-                     info.duration_seconds, info.duration_source, row["id"]),
+                     info.duration_seconds, info.duration_source,
+                     info.language, row["id"]),
                 )
                 self.conn.commit()
             return row["id"]
         cur.execute(
             """INSERT INTO media (title, year, media_type, season, episode, source,
                                   show_title, episode_title, duration_seconds,
-                                  duration_source)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                                  duration_source, language)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (info.title, info.year, info.media_type, info.season, info.episode,
              info.source, info.show_title, info.episode_title,
-             info.duration_seconds, info.duration_source),
+             info.duration_seconds, info.duration_source, info.language),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -511,8 +552,8 @@ class FingerprintDB:
         cur = self.conn.cursor()
         cur.execute(
             "SELECT title, year, media_type, season, episode, source, "
-            "show_title, episode_title, duration_seconds, duration_source "
-            "FROM media WHERE id=?", (media_id,))
+            "show_title, episode_title, duration_seconds, duration_source, "
+            "language FROM media WHERE id=?", (media_id,))
         r = cur.fetchone()
         if not r:
             return None
@@ -522,6 +563,7 @@ class FingerprintDB:
             show_title=r["show_title"], episode_title=r["episode_title"],
             duration_seconds=r["duration_seconds"],
             duration_source=r["duration_source"],
+            language=r["language"],
         )
 
     def clear_media(self, info: MediaInfo) -> None:
@@ -691,6 +733,7 @@ class FingerprintDB:
         allowed = {
             "title", "year", "media_type", "season", "episode", "source",
             "show_title", "episode_title", "duration_seconds", "duration_source",
+            "language",
         }
         sets = [(k, v) for k, v in fields.items() if k in allowed]
         if not sets:
