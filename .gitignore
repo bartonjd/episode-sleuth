@@ -52,3 +52,4 @@ gui_config.json
 !tests/fixtures/*.db
 !tests/fixtures/*.wav
 .coverage
+.tmp/

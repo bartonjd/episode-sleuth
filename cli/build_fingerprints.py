@@ -259,7 +259,7 @@ def _run_sequential(to_process, db, fp_cfg, title, year, media_type,
 
 def _process_files(files, db, fp_cfg, title, year, media_type, force=False,
                    show_title=None, workers=DEFAULT_BUILD_WORKERS, progress=None,
-                   fetch_duration=False):
+                   fetch_duration=False, use_processes=True):
     """Fingerprint a list of subtitle files, in parallel when it helps.
 
     Parsing + phonetic encoding for each file (the CPU-heavy part) runs across a
@@ -274,6 +274,13 @@ def _process_files(files, db, fp_cfg, title, year, media_type, force=False,
     threads suffice there.) If a process pool cannot be created or breaks mid-run
     (restricted or frozen environments), it transparently falls back to a thread
     pool and then to sequential processing, so a build never fails outright.
+
+    ``use_processes`` (default True) selects the CPU-bound process pool. The GUI
+    passes ``use_processes=False`` because it runs the builder in-process inside
+    a worker thread: in a frozen (PyInstaller) app, a ProcessPoolExecutor would
+    re-launch the bundled executable for each child process - spawning extra
+    application windows instead of workers. Threads (or sequential) avoid that
+    entirely while keeping the GUI responsive.
 
     ``workers == 1`` (or a single file) keeps the original fully-sequential
     behaviour. ``progress`` (optional) is called ``progress(done, total, path)``
@@ -310,9 +317,14 @@ def _process_files(files, db, fp_cfg, title, year, media_type, force=False,
 
     # Parallel path: compute across worker processes, store serially as results
     # arrive. Fall back gracefully if the pool cannot start or breaks mid-run.
+    # When use_processes is False (GUI in-process builds), skip the process pool
+    # entirely so a frozen executable never re-launches itself as child windows.
     logging.info("Building with %d parallel workers", workers)
-    for pool_cls, kind in ((ProcessPoolExecutor, "processes"),
-                           (ThreadPoolExecutor, "threads")):
+    pool_strategies = [(ProcessPoolExecutor, "processes"),
+                       (ThreadPoolExecutor, "threads")]
+    if not use_processes:
+        pool_strategies = [(ThreadPoolExecutor, "threads")]
+    for pool_cls, kind in pool_strategies:
         completed = set()
         done = 0
         try:
@@ -362,7 +374,7 @@ def _process_files(files, db, fp_cfg, title, year, media_type, force=False,
 
 def run_directory(directory, db, fp_cfg, title, year, media_type, force=False,
                   show_title=None, workers=DEFAULT_BUILD_WORKERS,
-                  fetch_duration=False):
+                  fetch_duration=False, progress=None, use_processes=True):
     if os.path.isfile(directory):
         files = [directory]
     else:
@@ -375,7 +387,8 @@ def run_directory(directory, db, fp_cfg, title, year, media_type, force=False,
         logging.info("Associating all files with TV show: %s", show_title)
     return _process_files(files, db, fp_cfg, title, year, media_type,
                           force=force, show_title=show_title, workers=workers,
-                          fetch_duration=fetch_duration)
+                          fetch_duration=fetch_duration, progress=progress,
+                          use_processes=use_processes)
 
 
 def run_show(query, db, fp_cfg, cfg, limit, media_type, year_override=None,

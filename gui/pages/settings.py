@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -79,7 +80,11 @@ class SettingsInterface(QWidget):
         self.cfg = window.gui_cfg
         self.setObjectName("settingsInterface")
 
-        root = QVBoxLayout(self)
+        # All cards live inside a scroll area so the page never squishes its
+        # cards together (which made card titles overlap their content on
+        # shorter windows); the Save button stays pinned below the scroll area.
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(28, 24, 28, 24)
         root.setSpacing(16)
 
@@ -273,13 +278,32 @@ class SettingsInterface(QWidget):
         stt_card.addLayout(stt_grid)
         root.addWidget(stt_card)
 
+        root.addStretch(1)
+
+        # Wrap the cards in a scroll area; pin the Save button row below it so it
+        # is always reachable no matter how tall the settings content grows.
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
         save_row = QHBoxLayout()
         save_row.addStretch(1)
         self.save_btn = PrimaryPushButton("Save settings", self, FIF.SAVE)
         self.save_btn.clicked.connect(self._save)
         save_row.addWidget(self.save_btn)
-        root.addLayout(save_row)
-        root.addStretch(1)
+
+        page = QVBoxLayout(self)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
+        page.addWidget(scroll, 1)
+        save_wrap = QWidget()
+        save_wrap_layout = QVBoxLayout(save_wrap)
+        save_wrap_layout.setContentsMargins(28, 8, 28, 16)
+        save_wrap_layout.addLayout(save_row)
+        page.addWidget(save_wrap)
 
         # Track the model size that is actually saved, plus any live download.
         self._saved_model_size = cur_size

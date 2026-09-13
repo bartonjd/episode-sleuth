@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from typing import List
@@ -22,9 +20,7 @@ from engine import (
     discover_media,
     identify_one,
 )
-from fingerprint_core import FingerprintConfig, load_config
-
-from .constants import HERE
+from fingerprint_core import FingerprintConfig, FingerprintDB, load_config
 
 # Speech-to-text helpers (Vosk model download + lookup). Imported defensively so
 # the GUI still launches even if an optional dependency is missing.
@@ -176,32 +172,94 @@ class IdentifyWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class BuildWorker(QThread):
-    output = Signal(str)
-    done = Signal(int)
+class LibraryBuildWorker(QThread):
+    """Builds the phonetic reference library in-process (no subprocess).
 
-    def __init__(self, cmd: List[str]):
+    Runs :func:`cli.build_fingerprints.run_directory` directly on this worker
+    thread. The previous implementation shelled out to
+    ``sys.executable -m cli.build_fingerprints``; in a frozen PyInstaller build
+    ``sys.executable`` is the app's own ``.exe``, which ignores the ``-m`` flag
+    and simply launched a *second copy of the whole GUI* - the "dual window" bug.
+    Building in-process fixes that and lets us report live per-file progress and
+    elapsed time.
+
+    ``use_processes=False`` is passed to the builder so it never uses a
+    ProcessPoolExecutor: under a frozen executable, multiprocessing re-launches
+    the bundled ``.exe`` for each child, which would spawn extra windows. Thread
+    or sequential compute keeps everything inside this one process.
+    """
+    output = Signal(str)                 # human-readable log line
+    progress = Signal(int, int, str)     # done, total, current filename
+    # exit_code (0 = ok), fingerprints_added, files_processed, files_skipped
+    done = Signal(int, int, int, int)
+
+    def __init__(self, path: str, db_path: str, config_path=None,
+                 show_title: str = "", overwrite: bool = False,
+                 fetch_duration: bool = False, workers: int = 4,
+                 language=None):
         super().__init__()
-        self.cmd = cmd
+        self.path = path
+        self.db_path = db_path
+        self.config_path = config_path or None
+        self.show_title = show_title
+        self.overwrite = overwrite
+        self.fetch_duration = fetch_duration
+        self.workers = max(1, int(workers))
+        self.language = language
 
     def run(self):
         try:
-            kwargs = dict(cwd=HERE, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, bufsize=1)
-            # Never flash a console window on Windows for the child process.
-            if sys.platform == "win32":
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-            proc = subprocess.Popen(self.cmd, **kwargs)
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                self.output.emit(line.rstrip())
-                logging.info(line.rstrip())
-            proc.wait()
-            self.output.emit(f"[exit code {proc.returncode}]")
-            self.done.emit(proc.returncode)
+            import dataclasses
+
+            from cli.build_fingerprints import run_directory
+
+            cfg = load_config(self.config_path)
+            fp_cfg = FingerprintConfig.from_config(cfg)
+            # Apply the Primary Language choice (if any) so the library is
+            # encoded consistently; an unset/auto value leaves per-file
+            # auto-detection to the builder.
+            if self.language:
+                try:
+                    from engine.language_utils import normalise_language
+                    _lang = normalise_language(self.language)
+                    if _lang:
+                        fp_cfg = dataclasses.replace(fp_cfg, language=_lang)
+                except Exception:
+                    pass
+
+            try:
+                db = FingerprintDB(self.db_path)
+            except (ValueError, OSError) as exc:
+                self.output.emit(f"ERROR: could not open database at "
+                                 f"{self.db_path}: {exc}")
+                self.done.emit(-1, 0, 0, 0)
+                return
+
+            def _progress(done_n, total_n, path):
+                name = os.path.basename(path)
+                self.progress.emit(done_n, total_n, name)
+                self.output.emit(f"[{done_n}/{total_n}] {name}")
+
+            try:
+                total, processed, skipped = run_directory(
+                    self.path, db, fp_cfg, None, None, None,
+                    force=self.overwrite,
+                    show_title=self.show_title or None,
+                    workers=self.workers,
+                    fetch_duration=self.fetch_duration,
+                    progress=_progress,
+                    use_processes=False)
+            finally:
+                db.close()
+
+            self.output.emit(
+                f"Done. Added {total} fingerprints - processed {processed} "
+                f"new file(s), skipped {skipped} existing.")
+            self.done.emit(0, total, processed, skipped)
         except Exception as exc:
+            logging.exception("Library build failed")
             self.output.emit(f"ERROR: {exc}")
-            self.done.emit(-1)
+            self.done.emit(-1, 0, 0, 0)
 
 
 class ModelDownloadWorker(QThread):

@@ -8,7 +8,7 @@ dvd_identifier_fluent.py module; the layout is now:
     gui/
       constants.py      shared constants (paths, colours, titles)
       logging_bridge.py route engine logging records to a Qt signal
-      workers.py        IdentifyWorker / BuildWorker / ModelDownloadWorker
+      workers.py        IdentifyWorker / LibraryBuildWorker / ModelDownloadWorker
       widgets.py        small helper widgets (Card, _path_row)
       main_window.py    MainWindow + main() entry point
       pages/            Identify / Build / Settings / Log interface pages
