@@ -96,7 +96,46 @@ jobs:
       - name: Build + package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: pwsh make.ps1 dist
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # 1) Build the standalone one-folder binary + release zip.
+          pwsh make.ps1 dist
+
+          # Stash the zip: the MSIX build below cleans dist/ before its own
+          # PyInstaller run, which would otherwise delete the freshly-built zip.
+          New-Item -ItemType Directory -Force -Path _stash | Out-Null
+          Copy-Item dist/*.zip _stash/ -Force
+
+          # 2) Derive a 4-part numeric MSIX version from __init__.py. The MSIX
+          #    manifest's Identity/@Version must be Major.Minor.Build.Revision
+          #    with numeric parts only, so a beta like "1.0.0b1" maps to
+          #    "1.0.0.0" (the pre-release suffix is dropped for the package id).
+          $raw = (Select-String -Path .\__init__.py `
+                    -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          # Take the leading dotted-numeric release prefix only, dropping any
+          # pre-release suffix (e.g. "1.0.0b1" -> "1.0.0"), then pad to 4 parts.
+          $lead = ([regex]::Match($raw, '^\d+(\.\d+)*')).Value
+          $nums = [System.Collections.ArrayList]@()
+          foreach ($p in $lead.Split('.')) { [void]$nums.Add($p) }
+          while ($nums.Count -lt 4) { [void]$nums.Add('0') }
+          $msixVer = ($nums[0..3] -join '.')
+          Write-Host "MSIX version: $msixVer (from __version__ = $raw)"
+
+          # 3) Build + self-sign the MSIX (build_msix.ps1 finds makeappx/signtool
+          #    from the Windows SDK preinstalled on the runner and creates a
+          #    self-signed cert + public .cer for side-loading).
+          pwsh -ExecutionPolicy Bypass -File build_msix.ps1 -Version $msixVer
+
+          # 4) Collect every release artifact into dist/ so the shared upload +
+          #    release steps pick them all up. The .cer lets users trust the
+          #    self-signed package before installing.
+          Copy-Item _stash/*.zip dist/ -Force
+          Copy-Item *.msix dist/ -Force
+          if (Test-Path packaging/episodesleuth_selfsign.cer) {
+            Copy-Item packaging/episodesleuth_selfsign.cer dist/ -Force
+          }
+          Write-Host "dist/ contents:"; Get-ChildItem dist/ | Format-Table Name,Length
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -106,6 +145,8 @@ jobs:
             dist/*.tar.gz
             dist/*.deb
             dist/*.zip
+            dist/*.msix
+            dist/*.cer
           if-no-files-found: warn
 
       - name: Attach artifacts to GitHub Release
@@ -115,4 +156,6 @@ jobs:
             dist/*.tar.gz
             dist/*.deb
             dist/*.zip
+            dist/*.msix
+            dist/*.cer
           fail_on_unmatched_files: false
