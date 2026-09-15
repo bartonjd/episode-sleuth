@@ -25,7 +25,6 @@ from qfluentwidgets import (
     ComboBox,
     InfoBar,
     InfoBarPosition,
-    LineEdit,
     MessageBox,
     PrimaryPushButton,
     ProgressBar,
@@ -44,8 +43,20 @@ from qfluentwidgets import (
 from engine.types import DEFAULT_MEDIA_EXTS
 
 from ..constants import DEFAULT_DB
-from ..widgets import Card, _path_row
+from ..widgets import Card, TagInputWidget, _path_row
 from ..workers import ModelDownloadWorker
+
+
+def _normalise_ext(raw: str) -> str:
+    """Clean a user-typed media extension into a canonical ``.ext`` token.
+
+    Lowercases, trims whitespace and any leading dots/asterisks, drops
+    anything non-alphanumeric, and re-adds a single leading dot. Returns an
+    empty string for entries that are not valid extensions.
+    """
+    token = (raw or "").strip().lower().lstrip(".*").strip()
+    token = "".join(ch for ch in token if ch.isalnum())
+    return f".{token}" if token else ""
 
 # Speech-to-text helpers, imported defensively (the page degrades gracefully if
 # the optional pydub/vosk dependencies are missing).
@@ -180,19 +191,23 @@ class SettingsInterface(QWidget):
         idf_grid.setHorizontalSpacing(16)
         idf_grid.setVerticalSpacing(10)
 
-        idf_grid.addWidget(BodyLabel("Media file extensions"), 0, 0)
-        self.exts_edit = LineEdit()
-        self.exts_edit.setText(self.cfg.get("media_extensions", DEFAULT_MEDIA_EXTS))
-        self.exts_edit.setPlaceholderText(DEFAULT_MEDIA_EXTS)
-        idf_grid.addWidget(self.exts_edit, 0, 1)
+        idf_grid.addWidget(BodyLabel("Media file extensions"), 0, 0,
+                           Qt.AlignLeft | Qt.AlignTop)
+        self.exts_input = TagInputWidget(
+            placeholder="Type an extension (e.g. mkv) and press Enter",
+            normalizer=_normalise_ext)
+        self.exts_input.set_tags(
+            self.cfg.get("media_extensions", DEFAULT_MEDIA_EXTS))
+        self.exts_input.changed.connect(self._on_field_changed)
+        idf_grid.addWidget(self.exts_input, 0, 1)
         self.exts_reset_btn = PushButton("Reset", self, FIF.CANCEL)
         self.exts_reset_btn.clicked.connect(
-            lambda: self.exts_edit.setText(DEFAULT_MEDIA_EXTS))
-        idf_grid.addWidget(self.exts_reset_btn, 0, 2)
+            lambda: self.exts_input.set_tags(DEFAULT_MEDIA_EXTS))
+        idf_grid.addWidget(self.exts_reset_btn, 0, 2, Qt.AlignTop)
         idf_grid.addWidget(
-            CaptionLabel("Comma-separated list of extensions to scan when "
-                         "identifying a folder (case-insensitive, dots "
-                         "optional)."), 1, 0, 1, 3)
+            CaptionLabel("Extensions scanned when identifying a folder "
+                         "(case-insensitive). Add one per chip; click the x "
+                         "to remove."), 1, 0, 1, 3)
 
         idf_grid.addWidget(BodyLabel("Ignore part-format differences"), 2, 0)
         self.part_switch = SwitchButton()
@@ -333,7 +348,7 @@ class SettingsInterface(QWidget):
             "max_workers": int(self.workers_spin.value()),
             "vosk_model_size": self._selected_model_size(),
             "primary_language": self.lang_combo.currentText(),
-            "media_extensions": self.exts_edit.text().strip(),
+            "media_extensions": self.exts_input.text(),
             "ignore_part_format_differences": bool(self.part_switch.isChecked()),
             "view_density": self.density_combo.currentText(),
             "view_mode": self.mode_combo.currentText(),
@@ -431,6 +446,11 @@ class SettingsInterface(QWidget):
             self.model_combo.setCurrentIndex(self._model_values.index(size))
         self.density_combo.setCurrentText(orig.get("view_density", "Standard"))
         self.mode_combo.setCurrentText(orig.get("view_mode", "Advanced"))
+        self.lang_combo.setCurrentText(orig.get("primary_language", "Auto-detect"))
+        self.exts_input.set_tags(
+            orig.get("media_extensions", DEFAULT_MEDIA_EXTS))
+        self.part_switch.setChecked(
+            bool(orig.get("ignore_part_format_differences", True)))
         # Re-apply the theme in case the live preview changed it.
         self.win.apply_theme(orig.get("theme", "Dark"))
         self._refresh_model_ui()
@@ -767,7 +787,7 @@ class SettingsInterface(QWidget):
             max_workers=int(self.workers_spin.value()),
             vosk_model_size=size,
             primary_language=self.lang_combo.currentText(),
-            media_extensions=self.exts_edit.text().strip() or DEFAULT_MEDIA_EXTS,
+            media_extensions=self.exts_input.text() or DEFAULT_MEDIA_EXTS,
             ignore_part_format_differences=bool(self.part_switch.isChecked()),
             view_density=self.density_combo.currentText(),
             view_mode=self.mode_combo.currentText(),

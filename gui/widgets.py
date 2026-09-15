@@ -2,15 +2,24 @@
 """Small reusable widgets shared across the GUI pages."""
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLayout,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import CardWidget, LineEdit, StrongBodyLabel, ToolButton
+from qfluentwidgets import (
+    BodyLabel,
+    CardWidget,
+    LineEdit,
+    PushButton,
+    StrongBodyLabel,
+    ToolButton,
+    TransparentToolButton,
+)
 from qfluentwidgets import FluentIcon as FIF
 
 
@@ -118,6 +127,15 @@ class FlowWidget(QWidget):
     def addWidget(self, widget: QWidget) -> None:
         self._flow.addWidget(widget)
 
+    def clear(self) -> None:
+        """Remove and delete every widget currently in the flow."""
+        while self._flow.count():
+            item = self._flow.takeAt(0)
+            w = item.widget() if item is not None else None
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
     @property
     def flow(self) -> FlowLayout:
         return self._flow
@@ -165,6 +183,11 @@ class CollapsibleCard(CardWidget):
     button toggles the visibility of the body content. Content is added the
     same way as :class:`Card` (``add`` / ``addLayout`` / ``addWidget``).
     """
+
+    # Emitted after the collapsed state changes; the argument is the new
+    # collapsed flag. Consumers use this to re-flow surrounding layout (e.g.
+    # re-assert a splitter pane's minimum height so content never clips).
+    toggled = Signal(bool)
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -216,6 +239,7 @@ class CollapsibleCard(CardWidget):
         self._toggle_btn.setIcon(
             FIF.CHEVRON_RIGHT_MED if self._collapsed else FIF.CHEVRON_DOWN_MED
         )
+        self.toggled.emit(self._collapsed)
 
     def toggle(self):
         self.set_collapsed(not self._collapsed)
@@ -227,6 +251,113 @@ class CollapsibleCard(CardWidget):
         """Apply view-density spacing to the card's content layout."""
         self._outer.setContentsMargins(margins[0], margins[1], margins[2], margins[3])
         self._v.setSpacing(spacing)
+
+
+class TagInputWidget(QWidget):
+    """An editable set of "chips" (tags), each removable via a small x button.
+
+    New tags are added by typing in the line edit and pressing Enter or the
+    Add button. Chips wrap onto multiple lines as needed. An optional
+    ``normalizer`` callback cleans each raw entry (e.g. lowercasing an
+    extension and forcing a leading dot); returning an empty string rejects
+    the entry. Duplicate tags are ignored.
+    """
+
+    changed = Signal()
+
+    def __init__(self, parent=None, placeholder: str = "",
+                 normalizer=None, add_text: str = "Add"):
+        super().__init__(parent)
+        self._tags: list[str] = []
+        self._normalizer = normalizer or (lambda s: s.strip())
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(8)
+
+        # Chips area (wraps).
+        self._chips = FlowWidget(self, spacing=6)
+        v.addWidget(self._chips)
+
+        # Input row: line edit + Add button.
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._edit = LineEdit()
+        self._edit.setPlaceholderText(placeholder)
+        self._edit.setClearButtonEnabled(True)
+        self._edit.returnPressed.connect(self._on_add)
+        self._add_btn = PushButton(add_text, self, FIF.ADD)
+        self._add_btn.clicked.connect(self._on_add)
+        row.addWidget(self._edit, 1)
+        row.addWidget(self._add_btn)
+        v.addLayout(row)
+
+    # -- public API --
+    def tags(self) -> list[str]:
+        """Return the current tags in insertion order."""
+        return list(self._tags)
+
+    def text(self) -> str:
+        """Return the tags as a comma-separated string."""
+        return ", ".join(self._tags)
+
+    def set_tags(self, value) -> None:
+        """Replace all tags from a list or a comma/space-separated string."""
+        if isinstance(value, str):
+            raw = [p for p in value.replace(",", " ").split()]
+        else:
+            raw = list(value or [])
+        self._tags = []
+        for item in raw:
+            norm = self._normalizer(str(item))
+            if norm and norm not in self._tags:
+                self._tags.append(norm)
+        self._rebuild()
+
+    # -- internals --
+    def _on_add(self) -> None:
+        norm = self._normalizer(self._edit.text())
+        self._edit.clear()
+        self._edit.setFocus()
+        if not norm or norm in self._tags:
+            return
+        self._tags.append(norm)
+        self._rebuild()
+
+    def _remove(self, tag: str) -> None:
+        if tag in self._tags:
+            self._tags.remove(tag)
+            self._rebuild()
+
+    def _rebuild(self) -> None:
+        self._chips.clear()
+        for tag in self._tags:
+            self._chips.addWidget(self._make_chip(tag))
+        self._chips.updateGeometry()
+        self._chips.setMinimumHeight(
+            self._chips.flow.heightForWidth(max(self._chips.width(), 1)))
+        self.changed.emit()
+
+    def _make_chip(self, tag: str) -> QWidget:
+        chip = QFrame()
+        chip.setObjectName("tagChip")
+        lay = QHBoxLayout(chip)
+        lay.setContentsMargins(12, 3, 4, 3)
+        lay.setSpacing(2)
+        lbl = BodyLabel(tag)
+        close = TransparentToolButton(FIF.CLOSE, chip)
+        close.setFixedSize(20, 20)
+        close.setIconSize(QSize(9, 9))
+        close.setToolTip(f"Remove {tag}")
+        close.setCursor(Qt.PointingHandCursor)
+        close.clicked.connect(lambda: self._remove(tag))
+        lay.addWidget(lbl)
+        lay.addWidget(close)
+        # A subtle pill that reads on both light and dark themes.
+        chip.setStyleSheet(
+            "#tagChip { background-color: rgba(128, 128, 128, 0.20);"
+            " border-radius: 12px; }")
+        return chip
 
 
 def _path_row(placeholder: str):

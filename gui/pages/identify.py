@@ -191,6 +191,7 @@ class IdentifyInterface(QWidget):
         self.splitter.setHandleWidth(8)
 
         top_widget = QWidget()
+        self.top_widget = top_widget
         top_layout = QVBoxLayout(top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(16)
@@ -211,6 +212,10 @@ class IdentifyInterface(QWidget):
 
         # --- options card (collapsible) ---
         self.opt_card = opt_card = CollapsibleCard("Options")
+        # Collapsing/expanding the Options card changes how much vertical room
+        # the controls need; re-assert the top pane's minimum height so the
+        # splitter never squeezes the card and clips its inputs.
+        opt_card.toggled.connect(lambda _c: self._sync_top_pane_min())
         grid = QGridLayout()
         grid.setHorizontalSpacing(24)
         grid.setVerticalSpacing(12)
@@ -432,6 +437,24 @@ class IdentifyInterface(QWidget):
 
         # Apply the saved view density / mode (spacing, panel visibility).
         self.apply_view_preferences()
+        # Ensure the controls pane starts tall enough for its content so the
+        # splitter cannot clip the Options card (e.g. from a stale saved size).
+        self._sync_top_pane_min()
+
+    def _sync_top_pane_min(self) -> None:
+        """Keep the splitter's top pane at least as tall as its controls.
+
+        The results table pane has the stretch factor, so with no results it
+        would otherwise pull the controls pane down to its bare minimum and
+        clip the (expanded) Options card. Pinning the top pane's minimum height
+        to its current content size hint prevents that: the splitter respects
+        the minimum, and the top pane grows/shrinks as the Options card is
+        expanded or collapsed.
+        """
+        widget = getattr(self, "top_widget", None)
+        if widget is None:
+            return
+        widget.setMinimumHeight(widget.sizeHint().height())
 
     # ----- identify-page config helpers -----
     def _ident_get(self, key: str, default=None):
@@ -498,6 +521,10 @@ class IdentifyInterface(QWidget):
         self.dry_row_widget.setVisible(panels["dry_run"])
         self.export_json_btn.setVisible(panels["exports"])
         self.export_csv_btn.setVisible(panels["exports"])
+
+        # Panel visibility changes the controls' natural height; keep the
+        # splitter's top pane from clipping them.
+        self._sync_top_pane_min()
 
     def _open_customize_view(self) -> None:
         """Open the Customize View dialog (Advanced mode) to pick panels."""
