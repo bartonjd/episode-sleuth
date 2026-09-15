@@ -13,9 +13,10 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
-    QScrollArea,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -23,12 +24,15 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     ComboBox,
+    HyperlinkButton,
     InfoBar,
     InfoBarPosition,
     MessageBox,
+    Pivot,
     PrimaryPushButton,
     ProgressBar,
     PushButton,
+    SingleDirectionScrollArea,
     SpinBox,
     StrongBodyLabel,
     SwitchButton,
@@ -37,6 +41,14 @@ from qfluentwidgets import (
 from qfluentwidgets import (
     FluentIcon as FIF,
 )
+
+try:
+    from __init__ import __version__ as APP_VERSION
+except Exception:  # pragma: no cover - fallback if package metadata missing
+    APP_VERSION = "unknown"
+
+GITHUB_URL = "https://github.com/bartonjd/episode-sleuth"
+DOCS_URL = "https://github.com/bartonjd/episode-sleuth/blob/main/README.md"
 
 # Default media extensions offered in the Identify options card. Imported from
 # the engine so config.json, discovery and this UI all share one definition.
@@ -91,18 +103,142 @@ class SettingsInterface(QWidget):
         self.cfg = window.gui_cfg
         self.setObjectName("settingsInterface")
 
-        # All cards live inside a scroll area so the page never squishes its
-        # cards together (which made card titles overlap their content on
-        # shorter windows); the Save button stays pinned below the scroll area.
-        content = QWidget()
-        root = QVBoxLayout(content)
-        root.setContentsMargins(28, 24, 28, 24)
-        root.setSpacing(16)
+        # Settings are organised into horizontal tabs (a Pivot bar over a
+        # stacked set of pages) so each concern is one click away instead of a
+        # long scroll. NOTE: the app has no logging settings, so the proposed
+        # "Logging" tab is replaced by "Appearance"; every existing control is
+        # preserved and redistributed across the tabs below.
+        self.pivot = Pivot(self)
+        self.stack = QStackedWidget(self)
+        self._page_by_key: dict[str, QWidget] = {}
+        self._reset_funcs: dict = {}
+        self._tab_titles: dict[str, str] = {}
 
-        root.addWidget(TitleLabel("Settings"))
-        root.addWidget(CaptionLabel(
+        # Build each tab's page, then register it with the pivot + stack.
+        tabs = [
+            ("stt", "Speech-to-Text", self._build_stt_tab(), self._reset_stt),
+            ("matching", "Matching", self._build_matching_tab(),
+             self._reset_matching),
+            ("database", "Database", self._build_database_tab(),
+             self._reset_database),
+            ("appearance", "Appearance", self._build_appearance_tab(),
+             self._reset_appearance),
+            ("about", "About", self._build_about_tab(), None),
+        ]
+        for key, title, page, reset_fn in tabs:
+            self._add_tab(key, title, page)
+            self._reset_funcs[key] = reset_fn
+            self._tab_titles[key] = title
+        self.pivot.currentItemChanged.connect(self._select_tab)
+
+        # Button row: per-tab Reset on the left, global Save on the right.
+        self.reset_btn = PushButton("Reset", self, FIF.CANCEL)
+        self.reset_btn.clicked.connect(self._reset_current_tab)
+        self.save_btn = PrimaryPushButton("Save settings", self, FIF.SAVE)
+        self.save_btn.clicked.connect(self._save)
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(self.reset_btn)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.save_btn)
+
+        # Page layout: title + caption, the pivot bar, the stacked pages (which
+        # take the remaining vertical space), and the pinned button row.
+        page = QVBoxLayout(self)
+        page.setContentsMargins(28, 24, 28, 16)
+        page.setSpacing(12)
+        page.addWidget(TitleLabel("Settings"))
+        page.addWidget(CaptionLabel(
             "These preferences are saved to gui_config.json, separate from the "
             "engine's config.json."))
+        page.addWidget(self.pivot)
+        page.addWidget(self.stack, 1)
+        page.addLayout(btn_row)
+
+        # Start on the first tab.
+        self._current_tab = "stt"
+        self.pivot.setCurrentItem("stt")
+        self.stack.setCurrentWidget(self._page_by_key["stt"])
+        self._update_reset_btn()
+
+        # Track the model size that is actually saved, plus any live download.
+        self._saved_model_size = self._selected_model_size()
+        self._dl_worker = None
+        self._refresh_model_ui()
+
+        # --- unsaved-changes tracking ------------------------------------------
+        # Snapshot the values as they were loaded; anything that differs from
+        # this snapshot counts as an unsaved change and triggers the Save /
+        # Discard / Cancel prompt when the user leaves the Settings tab.
+        self._original = self._snapshot()
+        # React to edits so we could surface dirty state if needed later.
+        self.db_edit.textChanged.connect(self._on_field_changed)
+        self.eng_edit.textChanged.connect(self._on_field_changed)
+        self.theme_combo.currentTextChanged.connect(self._on_field_changed)
+        self.workers_spin.valueChanged.connect(self._on_field_changed)
+        self.model_combo.currentIndexChanged.connect(self._on_field_changed)
+        self.lang_combo.currentTextChanged.connect(self._on_field_changed)
+
+    # ---- tab plumbing -----------------------------------------------------
+    def _add_tab(self, key: str, title: str, page: QWidget) -> None:
+        """Register a built page with the stacked widget and the pivot bar."""
+        page.setObjectName(f"{key}SettingsTab")
+        self.stack.addWidget(page)
+        self._page_by_key[key] = page
+        self.pivot.addItem(routeKey=key, text=title,
+                           onClick=lambda k=key: self._select_tab(k))
+
+    def _select_tab(self, key: str) -> None:
+        """Show the page for ``key`` and refresh the Reset button label."""
+        if key not in self._page_by_key:
+            return
+        self._current_tab = key
+        self.stack.setCurrentWidget(self._page_by_key[key])
+        # Keep the pivot highlight in sync when selection is programmatic
+        # (setCurrentItem is a no-op if the key is already current, so this
+        # never recurses when called from the currentItemChanged signal).
+        if self.pivot.currentRouteKey() != key:
+            self.pivot.setCurrentItem(key)
+        self._update_reset_btn()
+
+    def _update_reset_btn(self) -> None:
+        """Reset applies to the visible tab only; About has nothing to reset."""
+        key = getattr(self, "_current_tab", "stt")
+        title = self._tab_titles.get(key, "")
+        if self._reset_funcs.get(key) is None:
+            self.reset_btn.setText("Reset")
+            self.reset_btn.setEnabled(False)
+        else:
+            self.reset_btn.setText(f"Reset {title}")
+            self.reset_btn.setEnabled(True)
+
+    def _reset_current_tab(self) -> None:
+        fn = self._reset_funcs.get(getattr(self, "_current_tab", ""))
+        if fn is not None:
+            fn()
+
+    # ---- scroll wrapper ---------------------------------------------------
+    def _new_page_body(self):
+        """Create a transparent page body + its vertical layout."""
+        content = QWidget()
+        content.setObjectName("settingsTabBody")
+        content.setStyleSheet("#settingsTabBody { background: transparent; }")
+        root = QVBoxLayout(content)
+        root.setContentsMargins(2, 6, 14, 6)
+        root.setSpacing(16)
+        return content, root
+
+    def _wrap_scroll(self, content: QWidget) -> SingleDirectionScrollArea:
+        """Wrap a page body in a borderless, transparent vertical scroll area."""
+        scroll = SingleDirectionScrollArea(orient=Qt.Vertical)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.enableTransparentBackground()
+        return scroll
+
+    # ---- tab builders -----------------------------------------------------
+    def _build_database_tab(self) -> SingleDirectionScrollArea:
+        content, root = self._new_page_body()
 
         # database card
         db_card = Card("Reference fingerprint database")
@@ -124,6 +260,12 @@ class SettingsInterface(QWidget):
         eng_browse.clicked.connect(self._pick_engine)
         eng_card.add(self.eng_edit, eng_browse)
         root.addWidget(eng_card)
+
+        root.addStretch(1)
+        return self._wrap_scroll(content)
+
+    def _build_appearance_tab(self) -> SingleDirectionScrollArea:
+        content, root = self._new_page_body()
 
         # appearance card
         appear_card = Card("Appearance")
@@ -168,22 +310,11 @@ class SettingsInterface(QWidget):
         view_card.addLayout(view_grid)
         root.addWidget(view_card)
 
-        # performance card
-        perf_card = Card("Performance")
-        perf_grid = QGridLayout()
-        perf_grid.setHorizontalSpacing(24)
-        perf_grid.setVerticalSpacing(10)
-        perf_grid.addWidget(BodyLabel("Max parallel workers"), 0, 0)
-        self.workers_spin = SpinBox()
-        self.workers_spin.setRange(1, 16)
-        self.workers_spin.setValue(int(self.cfg.get("max_workers", 4)))
-        perf_grid.addWidget(self.workers_spin, 1, 0)
-        perf_grid.addWidget(
-            CaptionLabel("Number of files identified at the same time. Higher "
-                         "values are faster on multi-core machines."), 2, 0)
-        perf_grid.setColumnStretch(1, 1)
-        perf_card.addLayout(perf_grid)
-        root.addWidget(perf_card)
+        root.addStretch(1)
+        return self._wrap_scroll(content)
+
+    def _build_matching_tab(self) -> SingleDirectionScrollArea:
+        content, root = self._new_page_body()
 
         # identify options card
         idf_card = Card("Identify options")
@@ -200,7 +331,7 @@ class SettingsInterface(QWidget):
             self.cfg.get("media_extensions", DEFAULT_MEDIA_EXTS))
         self.exts_input.changed.connect(self._on_field_changed)
         idf_grid.addWidget(self.exts_input, 0, 1)
-        self.exts_reset_btn = PushButton("Reset", self, FIF.CANCEL)
+        self.exts_reset_btn = PushButton("Defaults", self, FIF.CANCEL)
         self.exts_reset_btn.clicked.connect(
             lambda: self.exts_input.set_tags(DEFAULT_MEDIA_EXTS))
         idf_grid.addWidget(self.exts_reset_btn, 0, 2, Qt.AlignTop)
@@ -221,6 +352,29 @@ class SettingsInterface(QWidget):
         idf_grid.setColumnStretch(1, 1)
         idf_card.addLayout(idf_grid)
         root.addWidget(idf_card)
+
+        # performance card
+        perf_card = Card("Performance")
+        perf_grid = QGridLayout()
+        perf_grid.setHorizontalSpacing(24)
+        perf_grid.setVerticalSpacing(10)
+        perf_grid.addWidget(BodyLabel("Max parallel workers"), 0, 0)
+        self.workers_spin = SpinBox()
+        self.workers_spin.setRange(1, 16)
+        self.workers_spin.setValue(int(self.cfg.get("max_workers", 4)))
+        perf_grid.addWidget(self.workers_spin, 1, 0)
+        perf_grid.addWidget(
+            CaptionLabel("Number of files identified at the same time. Higher "
+                         "values are faster on multi-core machines."), 2, 0)
+        perf_grid.setColumnStretch(1, 1)
+        perf_card.addLayout(perf_grid)
+        root.addWidget(perf_card)
+
+        root.addStretch(1)
+        return self._wrap_scroll(content)
+
+    def _build_stt_tab(self) -> SingleDirectionScrollArea:
+        content, root = self._new_page_body()
 
         # speech recognition card
         stt_card = Card("Speech recognition (Vosk model)")
@@ -294,49 +448,61 @@ class SettingsInterface(QWidget):
         root.addWidget(stt_card)
 
         root.addStretch(1)
+        return self._wrap_scroll(content)
 
-        # Wrap the cards in a scroll area; pin the Save button row below it so it
-        # is always reachable no matter how tall the settings content grows.
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(content)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    def _build_about_tab(self) -> SingleDirectionScrollArea:
+        content, root = self._new_page_body()
 
-        save_row = QHBoxLayout()
-        save_row.addStretch(1)
-        self.save_btn = PrimaryPushButton("Save settings", self, FIF.SAVE)
-        self.save_btn.clicked.connect(self._save)
-        save_row.addWidget(self.save_btn)
+        card = Card("About")
+        card.addWidget(TitleLabel("EpisodeSleuth"))
+        card.addWidget(BodyLabel(f"Version {APP_VERSION}"))
+        card.addWidget(CaptionLabel(
+            "Identify DVD-ripped episodes from their dialogue using "
+            "speech-to-text and phonetic fingerprinting against a subtitle-"
+            "built reference database."))
 
-        page = QVBoxLayout(self)
-        page.setContentsMargins(0, 0, 0, 0)
-        page.setSpacing(0)
-        page.addWidget(scroll, 1)
-        save_wrap = QWidget()
-        save_wrap_layout = QVBoxLayout(save_wrap)
-        save_wrap_layout.setContentsMargins(28, 8, 28, 16)
-        save_wrap_layout.addLayout(save_row)
-        page.addWidget(save_wrap)
+        links = QHBoxLayout()
+        links.setSpacing(8)
+        links.addWidget(HyperlinkButton(GITHUB_URL, "GitHub repository", self,
+                                        FIF.LINK))
+        links.addWidget(HyperlinkButton(DOCS_URL, "Documentation", self,
+                                        FIF.DOCUMENT))
+        links.addStretch(1)
+        card.addLayout(links)
+        root.addWidget(card)
 
-        # Track the model size that is actually saved, plus any live download.
-        self._saved_model_size = cur_size
-        self._dl_worker = None
+        root.addStretch(1)
+        return self._wrap_scroll(content)
+
+    # ---- per-tab reset ----------------------------------------------------
+    def _reset_stt(self) -> None:
+        orig = getattr(self, "_original", {}) or {}
+        self.lang_combo.setCurrentText(
+            orig.get("primary_language", "Auto-detect"))
+        size = orig.get("vosk_model_size", "small")
+        if size in self._model_values:
+            self.model_combo.setCurrentIndex(self._model_values.index(size))
         self._refresh_model_ui()
 
-        # --- unsaved-changes tracking ------------------------------------------
-        # Snapshot the values as they were loaded; anything that differs from
-        # this snapshot counts as an unsaved change and triggers the Save /
-        # Discard / Cancel prompt when the user leaves the Settings tab.
-        self._original = self._snapshot()
-        # React to edits so we could surface dirty state if needed later.
-        self.db_edit.textChanged.connect(self._on_field_changed)
-        self.eng_edit.textChanged.connect(self._on_field_changed)
-        self.theme_combo.currentTextChanged.connect(self._on_field_changed)
-        self.workers_spin.valueChanged.connect(self._on_field_changed)
-        self.model_combo.currentIndexChanged.connect(self._on_field_changed)
-        self.lang_combo.currentTextChanged.connect(self._on_field_changed)
+    def _reset_matching(self) -> None:
+        orig = getattr(self, "_original", {}) or {}
+        self.exts_input.set_tags(
+            orig.get("media_extensions", DEFAULT_MEDIA_EXTS))
+        self.part_switch.setChecked(
+            bool(orig.get("ignore_part_format_differences", True)))
+        self.workers_spin.setValue(int(orig.get("max_workers", 4)))
+
+    def _reset_database(self) -> None:
+        orig = getattr(self, "_original", {}) or {}
+        self.db_edit.setText(orig.get("db_path", ""))
+        self.eng_edit.setText(orig.get("engine_config_path", ""))
+
+    def _reset_appearance(self) -> None:
+        orig = getattr(self, "_original", {}) or {}
+        self.theme_combo.setCurrentText(orig.get("theme", "Dark"))
+        self.density_combo.setCurrentText(orig.get("view_density", "Standard"))
+        self.mode_combo.setCurrentText(orig.get("view_mode", "Advanced"))
+        self.win.apply_theme(orig.get("theme", "Dark"))
 
     # ---- unsaved-changes helpers -----------------------------------------
     def _snapshot(self) -> dict:
