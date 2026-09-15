@@ -403,7 +403,7 @@ class IdentifyInterface(QWidget):
         hdr.setSectionResizeMode(self.C_CHECK, QHeaderView.Fixed)
         hdr.setSectionResizeMode(self.C_NOTES, QHeaderView.Fixed)
         widths = {
-            self.C_CHECK: 40, self.C_FILE: 230, self.C_STATUS: 80,
+            self.C_CHECK: 32, self.C_FILE: 230, self.C_STATUS: 80,
             self.C_EPISODE: 90, self.C_TITLE: 200, self.C_SUGGESTED: 230,
             self.C_MATCH: 80, self.C_AGREE: 110, self.C_NOTES: 46,
         }
@@ -1032,11 +1032,11 @@ class IdentifyInterface(QWidget):
         pill = QLabel(f"{conf:.0%}")
         pill.setAlignment(Qt.AlignCenter)
         pill.setStyleSheet(
-            f"background-color: {colour}; color: white; border-radius: 8px; "
-            "padding: 1px 8px; font-weight: 600;")
+            f"background-color: {colour}; color: white; border-radius: 6px; "
+            "padding: 0px 6px; font-weight: 600; font-size: 11px;")
         wrap = QWidget()
         lay = QHBoxLayout(wrap)
-        lay.setContentsMargins(6, 3, 6, 3)
+        lay.setContentsMargins(4, 2, 4, 2)
         lay.addWidget(pill)
         return wrap
 
