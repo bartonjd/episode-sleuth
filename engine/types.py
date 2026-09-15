@@ -23,9 +23,15 @@ MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
 # the Settings UI and the discovery filter. It is an ordered, comma-separated
 # string (no dots) so it reads naturally in the Settings text box; the sets
 # above stay authoritative for actual matching via parse_media_exts().
-DEFAULT_MEDIA_EXTS = (
-    "mp4,mkv,avi,mov,m4v,wmv,flv,webm,mpg,mpeg,ts,"
-    "m4a,wav,mp3,flac,aac,ogg"
+# Defaults to the most common 5 video formats for a cleaner UI; users can add
+# more as needed.
+DEFAULT_MEDIA_EXTS = "mp4,mkv,avi,mov,m4v"
+
+# Complete list of all formats supported by the software stack (ffmpeg/vosk).
+# This is shown in the Settings help tooltip so users know what can be added.
+ALL_SUPPORTED_FORMATS = (
+    "Video: mp4, mkv, avi, mov, m4v, wmv, flv, webm, mpg, mpeg, ts\n"
+    "Audio: m4a, wav, mp3, flac, aac, ogg"
 )
 
 DEFAULT_SAMPLE_POINTS = [0.10, 0.30, 0.50, 0.70, 0.90]

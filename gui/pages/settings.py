@@ -37,6 +37,7 @@ from qfluentwidgets import (
     StrongBodyLabel,
     SwitchButton,
     TitleLabel,
+    ToolButton,
 )
 from qfluentwidgets import (
     FluentIcon as FIF,
@@ -52,7 +53,7 @@ DOCS_URL = "https://github.com/bartonjd/episode-sleuth/blob/main/README.md"
 
 # Default media extensions offered in the Identify options card. Imported from
 # the engine so config.json, discovery and this UI all share one definition.
-from engine.types import DEFAULT_MEDIA_EXTS
+from engine.types import ALL_SUPPORTED_FORMATS, DEFAULT_MEDIA_EXTS
 
 from ..constants import DEFAULT_DB
 from ..widgets import Card, TagInputWidget, _path_row
@@ -322,8 +323,20 @@ class SettingsInterface(QWidget):
         idf_grid.setHorizontalSpacing(16)
         idf_grid.setVerticalSpacing(10)
 
-        idf_grid.addWidget(BodyLabel("Media file extensions"), 0, 0,
-                           Qt.AlignLeft | Qt.AlignTop)
+        # Media extensions label with help icon
+        ext_label_row = QHBoxLayout()
+        ext_label_row.setSpacing(6)
+        ext_label_row.addWidget(BodyLabel("Media file extensions"))
+        ext_help_btn = ToolButton(FIF.QUESTION, self)
+        ext_help_btn.setFixedSize(20, 20)
+        ext_help_btn.setToolTip(
+            f"Supported formats:\n\n{ALL_SUPPORTED_FORMATS}\n\n"
+            "The default shows the 5 most common video formats.\n"
+            "Add more as needed by typing and pressing Enter.")
+        ext_label_row.addWidget(ext_help_btn)
+        ext_label_row.addStretch()
+        idf_grid.addLayout(ext_label_row, 0, 0, Qt.AlignLeft | Qt.AlignTop)
+
         self.exts_input = TagInputWidget(
             placeholder="Type an extension (e.g. mkv) and press Enter",
             normalizer=_normalise_ext)
