@@ -17,7 +17,6 @@ from qfluentwidgets import (
     LineEdit,
     PushButton,
     StrongBodyLabel,
-    ToolButton,
     TransparentToolButton,
 )
 from qfluentwidgets import FluentIcon as FIF
@@ -201,7 +200,11 @@ class CollapsibleCard(CardWidget):
         header = QHBoxLayout()
         header.setSpacing(8)
         self._title_label = StrongBodyLabel(title or "")
-        self._toggle_btn = ToolButton(FIF.CHEVRON_DOWN_MED)
+        self._toggle_btn = TransparentToolButton(FIF.CHEVRON_DOWN_MED)
+        # Keep the chevron compact so it reads as a subtle affordance next to
+        # the title rather than a large, heavy button.
+        self._toggle_btn.setFixedSize(24, 24)
+        self._toggle_btn.setIconSize(QSize(12, 12))
         self._toggle_btn.setToolTip("Collapse or expand this section")
         self._toggle_btn.setCursor(Qt.PointingHandCursor)
         self._toggle_btn.clicked.connect(self.toggle)

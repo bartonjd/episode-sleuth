@@ -91,6 +91,7 @@ from ..constants import (
     PILL_LOW,
     PILL_MED,
 )
+from ..path_utils import native_path
 from ..widgets import Card, CollapsibleCard, FlowWidget, _path_row
 from ..workers import IdentifyWorker
 
@@ -202,7 +203,7 @@ class IdentifyInterface(QWidget):
         # --- source card ---
         self.src_card = src_card = Card("DVD rips to identify")
         self.source_edit = _path_row("Folder or single video/audio file")
-        self.source_edit.setText(self.cfg.get("last_source", ""))
+        self.source_edit.setText(native_path(self.cfg.get("last_source", "")))
         folder_btn = PushButton("Folder", self, FIF.FOLDER)
         file_btn = PushButton("File", self, FIF.VIDEO)
         folder_btn.clicked.connect(self._pick_folder)
@@ -321,6 +322,19 @@ class IdentifyInterface(QWidget):
         # The undo button is only useful once a batch has been recorded.
         self.undo_btn.setEnabled(rename_history.peek_last_batch() is not None)
 
+        # --- results area (bottom splitter pane) ------------------------
+        # The filter box, status-filter tabs, colour legend and the results
+        # table all belong together: they all act on the table, so they live
+        # in the same (bottom) splitter pane. Keeping them here - rather than
+        # at the bottom of the top controls pane - stops the tabs/legend from
+        # jamming against the table header when the top pane hugs its content
+        # (which is what produced the stray, floating "File" header artifact).
+        bottom_widget = QWidget()
+        self.bottom_widget = bottom_widget
+        bottom_layout = QVBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(12)
+
         # --- filter / search box ---
         filter_row = QHBoxLayout()
         filter_row.setSpacing(10)
@@ -335,7 +349,7 @@ class IdentifyInterface(QWidget):
         # rows arrive and whenever the filter hides/shows rows.
         self.count_label = BodyLabel("0 items")
         filter_row.addWidget(self.count_label)
-        root.addLayout(filter_row)
+        bottom_layout.addLayout(filter_row)
 
         # --- status filter tabs (All / Rename / Correct / Review) ---
         self.status_pivot = SegmentedWidget()
@@ -346,14 +360,14 @@ class IdentifyInterface(QWidget):
         seg_row = QHBoxLayout()
         seg_row.addWidget(self.status_pivot)
         seg_row.addStretch(1)
-        root.addLayout(seg_row)
+        bottom_layout.addLayout(seg_row)
 
         # --- status colour legend (wrapped so it can be hidden by view mode) ---
         self.legend_widget = QWidget()
         legend_layout = self._build_legend()
         legend_layout.setContentsMargins(0, 0, 0, 0)
         self.legend_widget.setLayout(legend_layout)
-        root.addWidget(self.legend_widget)
+        bottom_layout.addWidget(self.legend_widget)
 
         # --- results table ---
         self.table = TableWidget()
@@ -419,10 +433,14 @@ class IdentifyInterface(QWidget):
             order = (Qt.DescendingOrder if self._sort_order else Qt.AscendingOrder)
             hdr.setSortIndicator(self._sort_col, order)
 
-        # Assemble the splitter: controls on top, results table below. The
-        # table pane gets the stretch so it grows first when the window does.
+        # The table fills the remaining space in the bottom pane, below the
+        # filter box, status tabs and legend that act on it.
+        bottom_layout.addWidget(self.table, 1)
+
+        # Assemble the splitter: controls on top, results area below. The
+        # bottom pane gets the stretch so it grows first when the window does.
         self.splitter.addWidget(top_widget)
-        self.splitter.addWidget(self.table)
+        self.splitter.addWidget(bottom_widget)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         # The top pane hugs its content height; the table pane expands.
@@ -703,7 +721,7 @@ class IdentifyInterface(QWidget):
         start = self.source_edit.text().strip() or self.cfg.get("last_source", "")
         p = QFileDialog.getExistingDirectory(self, "Select folder of DVD rips", start)
         if p:
-            self.source_edit.setText(p)
+            self.source_edit.setText(native_path(p))
 
     def _pick_file(self):
         start = self.cfg.get("last_source", "")
@@ -712,7 +730,7 @@ class IdentifyInterface(QWidget):
             "Media (*.mp4 *.mkv *.avi *.mov *.m4v *.mpg *.mpeg *.ts *.wmv "
             "*.flv *.webm *.m4a *.wav *.mp3 *.flac *.aac *.ogg);;All files (*.*)")
         if p:
-            self.source_edit.setText(p)
+            self.source_edit.setText(native_path(p))
 
     # ----- run -----
     def _start(self):
@@ -1241,7 +1259,7 @@ class IdentifyInterface(QWidget):
             write_csv(self.results, p)
             self.cfg.update(last_export_dir=os.path.dirname(p))
             self.cfg.save()
-            InfoBar.success("Exported", f"CSV written to {p}", duration=4000,
+            InfoBar.success("Exported", f"CSV written to {native_path(p)}", duration=4000,
                             position=InfoBarPosition.TOP, parent=self)
 
     def _export_json(self):
@@ -1253,7 +1271,7 @@ class IdentifyInterface(QWidget):
             write_json(self.results, p)
             self.cfg.update(last_export_dir=os.path.dirname(p))
             self.cfg.save()
-            InfoBar.success("Exported", f"JSON written to {p}", duration=4000,
+            InfoBar.success("Exported", f"JSON written to {native_path(p)}", duration=4000,
                             position=InfoBarPosition.TOP, parent=self)
 
     def _checked_results(self) -> List[FileResult]:
@@ -1494,15 +1512,15 @@ class RenamePreviewDialog(MessageBoxBase):
             f"Preview: {len(plan)} file(s) to copy", self)
         self.viewLayout.addWidget(self.titleLabel)
         self.viewLayout.addWidget(CaptionLabel(
-            f"Nothing is copied until you confirm. Destination root: {dest}",
-            self))
+            f"Nothing is copied until you confirm. Destination root: "
+            f"{native_path(dest)}", self))
 
         view = TextEdit(self)
         view.setReadOnly(True)
         view.setLineWrapMode(TextEdit.NoWrap)
         lines = []
         for item in plan:
-            rel = os.path.relpath(item["dest"], dest)
+            rel = native_path(os.path.relpath(item["dest"], dest))
             marker = "  (overwrites existing)" if os.path.exists(
                 item["dest"]) else ""
             lines.append(f"{item['filename']}\n    ->  {rel}{marker}\n")

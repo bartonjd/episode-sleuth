@@ -98,7 +98,9 @@ class MainWindow(FluentWindow):
                              "Manage library")
         self.addSubInterface(self.settings_interface, FIF.SETTING, "Settings",
                              NavigationItemPosition.BOTTOM)
-        self.addSubInterface(self.log_interface, FIF.COMMAND_PROMPT, "Log",
+        # Use a neutral "history / activity list" icon for the Log page rather
+        # than the Windows command-prompt glyph, which read as OS-specific.
+        self.addSubInterface(self.log_interface, FIF.HISTORY, "Log",
                              NavigationItemPosition.BOTTOM)
 
         self.navigationInterface.setExpandWidth(220)

@@ -29,6 +29,7 @@ from qfluentwidgets import (
 )
 
 from ..constants import DEFAULT_DB
+from ..path_utils import native_path
 from ..widgets import Card, _path_row
 from ..workers import LibraryBuildWorker
 from ..workers import _resolve_primary_language as _resolve_build_language
@@ -65,7 +66,7 @@ class BuildInterface(QWidget):
         # subtitles card
         subs_card = Card("Add subtitles  (phonetic reference)")
         self.subs_edit = _path_row("Folder or .srt/.vtt file")
-        self.subs_edit.setText(self.cfg.get("last_subtitle_source", ""))
+        self.subs_edit.setText(native_path(self.cfg.get("last_subtitle_source", "")))
         subs_folder = PushButton("Folder", self, FIF.FOLDER)
         subs_file = PushButton("File", self, FIF.DOCUMENT)
         subs_folder.clicked.connect(lambda: self._pick(self.subs_edit, True))
@@ -133,11 +134,11 @@ class BuildInterface(QWidget):
         if is_dir:
             p = QFileDialog.getExistingDirectory(self, "Select folder", edit.text().strip())
             if p:
-                edit.setText(p)
+                edit.setText(native_path(p))
         else:
             p, _ = QFileDialog.getOpenFileName(self, "Select file", "", filt)
             if p:
-                edit.setText(p)
+                edit.setText(native_path(p))
 
     def _build_subs(self):
         if self.worker and self.worker.isRunning():

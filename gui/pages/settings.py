@@ -56,6 +56,7 @@ DOCS_URL = "https://github.com/bartonjd/episode-sleuth/blob/main/README.md"
 from engine.types import ALL_SUPPORTED_FORMATS, DEFAULT_MEDIA_EXTS
 
 from ..constants import DEFAULT_DB
+from ..path_utils import native_path
 from ..widgets import Card, TagInputWidget, _path_row
 from ..workers import ModelDownloadWorker
 
@@ -244,8 +245,9 @@ class SettingsInterface(QWidget):
         # database card
         db_card = Card("Reference fingerprint database")
         self.db_edit = _path_row("Path to fingerprints.db")
-        self.db_edit.setText(self.cfg.get("db_path", "")
-                             or (DEFAULT_DB if os.path.exists(DEFAULT_DB) else ""))
+        self.db_edit.setText(native_path(
+            self.cfg.get("db_path", "")
+            or (DEFAULT_DB if os.path.exists(DEFAULT_DB) else "")))
         db_browse = PushButton("Browse", self, FIF.FOLDER)
         db_browse.clicked.connect(self._pick_db)
         db_new = PushButton("Create New Database", self, FIF.ADD)
@@ -256,7 +258,7 @@ class SettingsInterface(QWidget):
         # engine config card
         eng_card = Card("Engine configuration (optional)")
         self.eng_edit = _path_row("Path to config.json (blank = use default)")
-        self.eng_edit.setText(self.cfg.get("engine_config_path", ""))
+        self.eng_edit.setText(native_path(self.cfg.get("engine_config_path", "")))
         eng_browse = PushButton("Browse", self, FIF.DOCUMENT)
         eng_browse.clicked.connect(self._pick_engine)
         eng_card.add(self.eng_edit, eng_browse)
@@ -507,8 +509,8 @@ class SettingsInterface(QWidget):
 
     def _reset_database(self) -> None:
         orig = getattr(self, "_original", {}) or {}
-        self.db_edit.setText(orig.get("db_path", ""))
-        self.eng_edit.setText(orig.get("engine_config_path", ""))
+        self.db_edit.setText(native_path(orig.get("db_path", "")))
+        self.eng_edit.setText(native_path(orig.get("engine_config_path", "")))
 
     def _reset_appearance(self) -> None:
         orig = getattr(self, "_original", {}) or {}
@@ -616,8 +618,8 @@ class SettingsInterface(QWidget):
         orig = getattr(self, "_original", None)
         if not orig:
             return
-        self.db_edit.setText(orig.get("db_path", ""))
-        self.eng_edit.setText(orig.get("engine_config_path", ""))
+        self.db_edit.setText(native_path(orig.get("db_path", "")))
+        self.eng_edit.setText(native_path(orig.get("engine_config_path", "")))
         self.theme_combo.setCurrentText(orig.get("theme", "Dark"))
         self.workers_spin.setValue(int(orig.get("max_workers", 4)))
         size = orig.get("vosk_model_size", "small")
@@ -653,7 +655,7 @@ class SettingsInterface(QWidget):
         if not chosen:
             return
         p = chosen[0]
-        self.db_edit.setText(p)
+        self.db_edit.setText(native_path(p))
         # If the chosen path does not exist yet, offer to create it right away so
         # later operations (Build Library / Identify) do not fail.
         if not os.path.exists(p):
@@ -679,15 +681,16 @@ class SettingsInterface(QWidget):
         if os.path.exists(p):
             box = MessageBox(
                 "Database already exists",
-                f"A file already exists at:\n{p}\n\nUse this existing database?",
+                f"A file already exists at:\n{native_path(p)}\n\n"
+                "Use this existing database?",
                 self.win)
             box.yesButton.setText("Use it")
             box.cancelButton.setText("Cancel")
             if box.exec():
-                self.db_edit.setText(p)
+                self.db_edit.setText(native_path(p))
             return
         if self._init_new_db(p):
-            self.db_edit.setText(p)
+            self.db_edit.setText(native_path(p))
 
     def _offer_create_db(self, path: str) -> bool:
         """Ask whether to create a missing database, and create it if confirmed.
@@ -697,7 +700,7 @@ class SettingsInterface(QWidget):
         """
         box = MessageBox(
             "Database does not exist",
-            f"No database was found at:\n{path}\n\nCreate it now?",
+            f"No database was found at:\n{native_path(path)}\n\nCreate it now?",
             self.win)
         box.yesButton.setText("Create it")
         box.cancelButton.setText("Not now")
@@ -731,7 +734,7 @@ class SettingsInterface(QWidget):
             return False
         InfoBar.success(
             "Database ready",
-            f"An empty fingerprint database was created at {path}.",
+            f"An empty fingerprint database was created at {native_path(path)}.",
             duration=5000, position=InfoBarPosition.TOP, parent=self)
         return True
 
@@ -740,7 +743,7 @@ class SettingsInterface(QWidget):
             self, "Select engine config.json", self.eng_edit.text().strip(),
             "JSON (*.json);;All files (*.*)")
         if p:
-            self.eng_edit.setText(p)
+            self.eng_edit.setText(native_path(p))
 
     def _change_theme(self, name: str):
         self.win.apply_theme(name)
