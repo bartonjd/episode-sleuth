@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..main_window import MainWindow
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -1013,6 +1013,9 @@ class IdentifyInterface(QWidget):
             item.setToolTip(tooltip)
         elif text.strip():
             item.setToolTip(text)
+        # Use the application palette's text color for proper theme-aware contrast
+        palette = QApplication.instance().palette()
+        item.setForeground(palette.color(QPalette.WindowText))
         return item
 
     @staticmethod
