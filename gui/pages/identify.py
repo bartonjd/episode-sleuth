@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..main_window import MainWindow
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QPalette
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -50,6 +50,7 @@ from qfluentwidgets import (
     TextEdit,
     TitleLabel,
     ToolButton,
+    isDarkTheme,
 )
 from qfluentwidgets import (
     FluentIcon as FIF,
@@ -1013,9 +1014,11 @@ class IdentifyInterface(QWidget):
             item.setToolTip(tooltip)
         elif text.strip():
             item.setToolTip(text)
-        # Use the application palette's text color for proper theme-aware contrast
-        palette = QApplication.instance().palette()
-        item.setForeground(palette.color(QPalette.WindowText))
+        # Explicit theme-aware text colours for maximum contrast. The palette's
+        # WindowText washed out in light mode, so pin near-black on light and
+        # light-gray on dark instead.
+        item.setForeground(QBrush(
+            QColor("#e8e8e8") if isDarkTheme() else QColor("#0d0d0d")))
         return item
 
     @staticmethod
