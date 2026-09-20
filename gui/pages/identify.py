@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..main_window import MainWindow
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -50,7 +50,6 @@ from qfluentwidgets import (
     TextEdit,
     TitleLabel,
     ToolButton,
-    isDarkTheme,
 )
 from qfluentwidgets import (
     FluentIcon as FIF,
@@ -399,6 +398,19 @@ class IdentifyInterface(QWidget):
         # All columns are user-resizable (Interactive) except the fixed-width
         # checkbox and the narrow Notes-icon column.
         hdr = self.table.horizontalHeader()
+        # Header label contrast: the themed header-section background can leave
+        # the stock label colour washed out (the same theme/palette mismatch
+        # that affected the cells - qfluentwidgets paints header text white when
+        # its theme reports "dark", even while the real header background stays
+        # light). The header painter ignores per-item foreground, so override
+        # the section text colour with a stylesheet, picking near-black or light
+        # from the luminance of the real header-section background.
+        hdr_bg = self.palette().color(QPalette.Dark)
+        hdr_lum = (0.299 * hdr_bg.red() + 0.587 * hdr_bg.green()
+                   + 0.114 * hdr_bg.blue())
+        hdr_color = "#0d0d0d" if hdr_lum > 140 else "#f0f0f0"
+        hdr.setStyleSheet(
+            "QHeaderView::section { color: %s; }" % hdr_color)
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(self.C_CHECK, QHeaderView.Fixed)
@@ -999,13 +1011,37 @@ class IdentifyInterface(QWidget):
                                auto_check=True)
 
     @staticmethod
-    def _make_text_item(text: str, *, center: bool = False,
-                        tooltip: Optional[str] = None) -> QTableWidgetItem:
+    def _contrast_text_color(tint: Optional[QColor] = None) -> QColor:
+        """Pick a text colour that contrasts with the cell's real background.
+
+        qfluentwidgets' ``isDarkTheme()`` can disagree with the actual Qt
+        palette that paints the table (e.g. the theme reports "dark" while the
+        widget base is still white), which left the old theme-keyed text colour
+        washed out. Instead we composite the semi-transparent row tint over the
+        real palette Base colour and choose near-black or light-gray text from
+        the resulting luminance, so contrast is correct regardless of theme."""
+        base = QApplication.palette().color(QPalette.Base)
+        r, g, b = base.red(), base.green(), base.blue()
+        if tint is not None and tint.alpha() > 0:
+            a = tint.alpha() / 255.0
+            r = tint.red() * a + r * (1.0 - a)
+            g = tint.green() * a + g * (1.0 - a)
+            b = tint.blue() * a + b * (1.0 - a)
+        # Perceptual luminance (ITU-R BT.601 weights).
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        return QColor("#0d0d0d") if lum > 140 else QColor("#e8e8e8")
+
+    @classmethod
+    def _make_text_item(cls, text: str, *, center: bool = False,
+                        tooltip: Optional[str] = None,
+                        tint: Optional[QColor] = None) -> QTableWidgetItem:
         """Build a plain, non-editable table cell.
 
         When no explicit tooltip is given, the cell's full text is used as its
         tooltip so values truncated with an ellipsis in a narrow column can
-        still be read in full on hover."""
+        still be read in full on hover. ``tint`` is the row's background tint
+        (if any) so the text colour can be chosen for maximum contrast against
+        the composited background."""
         text = str(text)
         item = QTableWidgetItem(text)
         if center:
@@ -1014,11 +1050,7 @@ class IdentifyInterface(QWidget):
             item.setToolTip(tooltip)
         elif text.strip():
             item.setToolTip(text)
-        # Explicit theme-aware text colours for maximum contrast. The palette's
-        # WindowText washed out in light mode, so pin near-black on light and
-        # light-gray on dark instead.
-        item.setForeground(QBrush(
-            QColor("#e8e8e8") if isDarkTheme() else QColor("#0d0d0d")))
+        item.setForeground(QBrush(cls._contrast_text_color(tint)))
         return item
 
     @staticmethod
@@ -1117,18 +1149,24 @@ class IdentifyInterface(QWidget):
         suggested = data.get("suggested_filename", "")
         suggested_disp = "-" if status == "correct" else (suggested or "-")
 
-        # Populate the text columns via the small item builder.
+        # Populate the text columns via the small item builder. The row tint is
+        # passed so each cell's text colour is chosen for contrast against it.
+        tint = appear.tint
         self.table.setItem(row, self.C_FILE,
-                           self._make_text_item(data["filename"]))
+                           self._make_text_item(data["filename"], tint=tint))
         self.table.setItem(row, self.C_STATUS,
-                           self._make_text_item(appear.text, center=True))
+                           self._make_text_item(appear.text, center=True,
+                                                tint=tint))
         self.table.setItem(row, self.C_EPISODE,
-                           self._make_text_item(data["episode_id"], center=True))
+                           self._make_text_item(data["episode_id"],
+                                                center=True, tint=tint))
         self.table.setItem(row, self.C_AGREE,
-                           self._make_text_item(data["agreement"], center=True))
+                           self._make_text_item(data["agreement"],
+                                                center=True, tint=tint))
 
         # Episode Title - flag a swapped/mismatched title with a badge icon.
-        title_item = self._make_text_item(data.get("episode_title", ""))
+        title_item = self._make_text_item(data.get("episode_title", ""),
+                                          tint=tint)
         if self._title_mismatch(r, data):
             # Render the flag in an explicit high-contrast red so it stays
             # visible on tinted status rows (the theme default can wash out).
@@ -1143,7 +1181,8 @@ class IdentifyInterface(QWidget):
             suggested_disp,
             center=(suggested_disp == "-"),
             tooltip=("Already correctly named - no rename needed."
-                     if status == "correct" else None))
+                     if status == "correct" else None),
+            tint=tint)
         self.table.setItem(row, self.C_SUGGESTED, sugg_item)
 
         # Match % - a placeholder item carries the row tint; the pill sits on top.
