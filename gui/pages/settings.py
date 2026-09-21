@@ -409,11 +409,12 @@ class SettingsInterface(QWidget):
         if cur_lang not in self._lang_labels:
             cur_lang = "Auto-detect"
         self.lang_combo.setCurrentText(cur_lang)
+        self.lang_combo.setMinimumWidth(220)
         stt_grid.addWidget(self.lang_combo, 0, 1)
         stt_grid.addWidget(
             CaptionLabel("English uses phonetic (metaphone) matching; other "
                          "languages match on words. Auto-detect needs the "
-                         "optional 'langdetect' package."), 1, 0, 1, 4)
+                         "optional 'langdetect' package."), 1, 0, 1, 5)
 
         stt_grid.addWidget(BodyLabel("Model size"), 2, 0)
         self.model_combo = ComboBox()
@@ -424,6 +425,7 @@ class SettingsInterface(QWidget):
         idx = self._model_values.index(cur_size) if cur_size in self._model_values else 0
         self.model_combo.setCurrentIndex(idx)
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        self.model_combo.setMinimumWidth(220)
         stt_grid.addWidget(self.model_combo, 2, 1)
 
         # Download / update button + a dedicated Cancel Download button that is
@@ -438,7 +440,7 @@ class SettingsInterface(QWidget):
         stt_grid.addWidget(self.model_cancel_btn, 2, 3)
 
         self.model_status = CaptionLabel("")
-        stt_grid.addWidget(self.model_status, 3, 1, 1, 3)
+        stt_grid.addWidget(self.model_status, 3, 1, 1, 4)
 
         # Persistent progress bar + percentage caption, styled to match the
         # Identify tab's progress bar (thin, 6 px). Hidden until a download runs
@@ -446,19 +448,23 @@ class SettingsInterface(QWidget):
         self.model_progress = ProgressBar()
         self.model_progress.setFixedHeight(6)
         self.model_progress.setVisible(False)
-        stt_grid.addWidget(self.model_progress, 4, 0, 1, 4)
+        stt_grid.addWidget(self.model_progress, 4, 0, 1, 5)
         # A prominent status readout, e.g.
         # "Downloading vosk-model-small-en-us-0.15... 45%".
         self.model_progress_label = StrongBodyLabel("")
         self.model_progress_label.setVisible(False)
-        stt_grid.addWidget(self.model_progress_label, 5, 0, 1, 4)
+        stt_grid.addWidget(self.model_progress_label, 5, 0, 1, 5)
 
         stt_grid.addWidget(
             CaptionLabel("The large model is far more accurate on clean DVD-rip "
                          "audio but uses ~1.8 GB. Choose a size, then click "
                          "Download. Re-downloading refreshes it to the latest "
-                         "published build."), 6, 0, 1, 4)
-        stt_grid.setColumnStretch(1, 1)
+                         "published build."), 6, 0, 1, 5)
+        # Keep the combo + Download/Cancel buttons grouped on the left; let a
+        # trailing empty column soak up extra width. Stretching the combo column
+        # (the old behaviour) shoved the Download button off the right edge on
+        # narrower windows, hiding it entirely.
+        stt_grid.setColumnStretch(4, 1)
         stt_card.addLayout(stt_grid)
         root.addWidget(stt_card)
 
