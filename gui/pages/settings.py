@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 import os
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -132,6 +133,7 @@ class SettingsInterface(QWidget):
             self._reset_funcs[key] = reset_fn
             self._tab_titles[key] = title
         self.pivot.currentItemChanged.connect(self._select_tab)
+        self._style_pivot()
 
         # Button row: per-tab Reset on the left, global Save on the right.
         self.reset_btn = PushButton("Reset", self, FIF.CANCEL)
@@ -181,6 +183,21 @@ class SettingsInterface(QWidget):
         self.lang_combo.currentTextChanged.connect(self._on_field_changed)
 
     # ---- tab plumbing -----------------------------------------------------
+    def _style_pivot(self) -> None:
+        """Give the tab bar more visual weight: bold, slightly smaller labels
+        with breathing room between them so the section headers read clearly."""
+        # More space between tabs makes each one feel like a distinct header.
+        self.pivot.hBoxLayout.setSpacing(10)
+        for item in self.pivot.items.values():
+            font = item.font()
+            font.setBold(True)
+            font.setWeight(QFont.Weight.DemiBold)
+            # Shrink a touch from the default so the bolder weight does not
+            # crowd the bar (default pixel size is 18).
+            font.setPixelSize(15)
+            item.setFont(font)
+            item.adjustSize()
+
     def _add_tab(self, key: str, title: str, page: QWidget) -> None:
         """Register a built page with the stacked widget and the pivot bar."""
         page.setObjectName(f"{key}SettingsTab")

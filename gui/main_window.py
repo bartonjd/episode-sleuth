@@ -93,7 +93,11 @@ class MainWindow(FluentWindow):
         self.log_bridge.message.connect(self.log_interface.append)
 
         self.addSubInterface(self.identify_interface, FIF.SEARCH, "Identify")
-        self.addSubInterface(self.build_interface, FIF.ADD, "Build library")
+        # Use a "tools" glyph for Build library so it reads as an action
+        # (constructing the library) and is visually distinct from the
+        # "Manage library" book-shelf icon below it.
+        self.addSubInterface(self.build_interface, FIF.DEVELOPER_TOOLS,
+                             "Build library")
         self.addSubInterface(self.library_interface, FIF.BOOK_SHELF,
                              "Manage library")
         self.addSubInterface(self.settings_interface, FIF.SETTING, "Settings",

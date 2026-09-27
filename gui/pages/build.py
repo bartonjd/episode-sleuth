@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from typing import TYPE_CHECKING, Optional
 
@@ -28,11 +29,15 @@ from qfluentwidgets import (
     FluentIcon as FIF,
 )
 
-from ..constants import DEFAULT_DB
 from ..path_utils import native_path
 from ..widgets import Card, _path_row
 from ..workers import LibraryBuildWorker
 from ..workers import _resolve_primary_language as _resolve_build_language
+
+try:  # engine is optional at import time (validated lazily when building)
+    from fingerprint_core import FingerprintDB
+except Exception:  # pragma: no cover - engine unavailable in some environments
+    FingerprintDB = None
 
 
 class BuildInterface(QWidget):
@@ -140,6 +145,51 @@ class BuildInterface(QWidget):
             if p:
                 edit.setText(native_path(p))
 
+    def _default_db_path(self) -> str:
+        """Return a per-user, platform-appropriate default database path."""
+        if sys.platform == "win32":
+            base = os.getenv("APPDATA") or os.path.expanduser("~")
+            return os.path.join(base, "EpisodeSleuth", "fingerprints.db")
+        return os.path.join(
+            os.path.expanduser("~"), ".local", "share", "episodesleuth",
+            "fingerprints.db")
+
+    def _ensure_db_path(self) -> str:
+        """Resolve the fingerprint database path, creating one if needed.
+
+        If the user has configured a database (or a default DB already exists),
+        that path is used - we just make sure its parent directory exists. If no
+        database is configured yet, pick a platform-appropriate per-user
+        location, create the parent directory, initialise an empty database
+        file, and persist the choice to the GUI config so future sessions reuse
+        the same library.
+        """
+        db_path = self.win.current_db_path()
+        if db_path:
+            parent = os.path.dirname(db_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            return db_path
+
+        db_path = self._default_db_path()
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        if not os.path.exists(db_path):
+            # Prefer the engine so the full schema is applied up front; fall
+            # back to touching the file (a zero-byte file is a valid, empty
+            # SQLite database the engine initialises on first write).
+            try:
+                if FingerprintDB is not None:
+                    db = FingerprintDB(db_path)
+                    db.conn.close()
+                else:
+                    open(db_path, "a").close()
+            except Exception:
+                open(db_path, "a").close()
+            self.build_out.append(f"  created database: {db_path}")
+        self.cfg.update(db_path=db_path)
+        self.cfg.save()
+        return db_path
+
     def _build_subs(self):
         if self.worker and self.worker.isRunning():
             self._error("A build task is already running.")
@@ -165,7 +215,7 @@ class BuildInterface(QWidget):
         # language individually; any specific choice is passed through so the
         # library is encoded consistently for that language.
         lang = _resolve_build_language(self.cfg.get("primary_language"))
-        db_path = self.win.current_db_path() or DEFAULT_DB
+        db_path = self._ensure_db_path()
         config_path = self.win.current_engine_config() or None
 
         # Run the builder IN-PROCESS on a worker thread. This replaced an older
