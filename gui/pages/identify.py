@@ -492,9 +492,14 @@ class IdentifyInterface(QWidget):
         need = widget.sizeHint().height()
         lay = getattr(self, "top_layout", None)
         if lay is not None:
-            # sizeHint() can under-report before the first real layout pass;
-            # the layout's own minimum/hint is a more reliable floor.
-            need = max(need, lay.minimumSize().height(), lay.sizeHint().height())
+            # The widget's own sizeHint() is the reliable figure: it accounts
+            # for heightForWidth (the actions row is a FlowWidget whose
+            # *layout* sizeHint over-reports a tall multi-row height as if the
+            # buttons wrapped, even though they sit on one row at the real
+            # width). Only fold in the layout's minimumSize as a lower floor -
+            # never its sizeHint, which would inflate the pane and push its
+            # content down over the filter row below (the z-order overlap).
+            need = max(need, lay.minimumSize().height())
         widget.setMinimumHeight(need)
         # Enforce it on the splitter too. setChildrenCollapsible(False) stops a
         # pane from vanishing, but a stale saved size can still hand the top
