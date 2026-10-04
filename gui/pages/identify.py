@@ -470,7 +470,11 @@ class IdentifyInterface(QWidget):
         self.apply_view_preferences()
         # Ensure the controls pane starts tall enough for its content so the
         # splitter cannot clip the Options card (e.g. from a stale saved size).
+        # Run once now, then again after the first layout pass settles (when
+        # sizeHint() is reliable) so the top pane can never overlap the filter
+        # row below it.
         self._sync_top_pane_min()
+        QTimer.singleShot(0, self._sync_top_pane_min)
 
     def _sync_top_pane_min(self) -> None:
         """Keep the splitter's top pane at least as tall as its controls.
@@ -485,7 +489,27 @@ class IdentifyInterface(QWidget):
         widget = getattr(self, "top_widget", None)
         if widget is None:
             return
-        widget.setMinimumHeight(widget.sizeHint().height())
+        need = widget.sizeHint().height()
+        lay = getattr(self, "top_layout", None)
+        if lay is not None:
+            # sizeHint() can under-report before the first real layout pass;
+            # the layout's own minimum/hint is a more reliable floor.
+            need = max(need, lay.minimumSize().height(), lay.sizeHint().height())
+        widget.setMinimumHeight(need)
+        # Enforce it on the splitter too. setChildrenCollapsible(False) stops a
+        # pane from vanishing, but a stale saved size can still hand the top
+        # pane fewer pixels than its controls need - and because sibling panes
+        # do not clip, the overflow paints ON TOP of the filter/tabs below it
+        # (the z-order overlap). Re-divide so the top pane always gets >= need.
+        splitter = getattr(self, "splitter", None)
+        if splitter is not None:
+            sizes = splitter.sizes()
+            if len(sizes) == 2 and sizes[0] < need:
+                total = sizes[0] + sizes[1]
+                bottom_min = self.table.minimumHeight() if getattr(
+                    self, "table", None) is not None else 200
+                bottom = max(bottom_min, total - need)
+                splitter.setSizes([need, bottom])
 
     # ----- identify-page config helpers -----
     def _ident_get(self, key: str, default=None):

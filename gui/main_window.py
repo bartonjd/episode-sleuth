@@ -30,7 +30,7 @@ from qfluentwidgets import (
     setThemeColor,
 )
 
-from gui_config import GuiConfig
+from gui_config import GuiConfig, default_db_path
 
 from .constants import (
     APP_TITLE,
@@ -178,7 +178,14 @@ class MainWindow(FluentWindow):
         p = self.gui_cfg.get("db_path", "")
         if p:
             return p
-        return DEFAULT_DB if os.path.exists(DEFAULT_DB) else ""
+        # Nothing configured: fall back to a database that already exists at a
+        # well-known location (the legacy project-local DB, or the per-user
+        # default that Build/Identify create). This lets a library built in a
+        # previous session be found even if gui_config.json was reset.
+        for cand in (DEFAULT_DB, default_db_path()):
+            if cand and os.path.exists(cand):
+                return cand
+        return ""
 
     def current_engine_config(self) -> str:
         return self.gui_cfg.get("engine_config_path", "")

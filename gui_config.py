@@ -19,10 +19,28 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any, Dict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GUI_CONFIG_PATH = os.path.join(HERE, "gui_config.json")
+
+
+def default_db_path() -> str:
+    """Return a per-user, platform-appropriate default database path.
+
+    Shared by the Build and Identify pages so both agree on where the
+    fingerprint library lives when the user has not chosen a location:
+
+        Windows:      %APPDATA%\\EpisodeSleuth\\fingerprints.db
+        Linux/macOS:  ~/.local/share/episodesleuth/fingerprints.db
+    """
+    if sys.platform == "win32":
+        base = os.getenv("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "EpisodeSleuth", "fingerprints.db")
+    return os.path.join(
+        os.path.expanduser("~"), ".local", "share", "episodesleuth",
+        "fingerprints.db")
 
 # Built-in defaults. Any key missing from the on-disk file falls back to these.
 DEFAULTS: Dict[str, Any] = {
@@ -44,6 +62,11 @@ DEFAULTS: Dict[str, Any] = {
     # French | German | Other.
     "primary_language": "Auto-detect",
     "last_show_title": "",      # last TV show used for batch library import
+    # Extensions scanned when identifying a folder (comma-separated). "" lets the
+    # engine fall back to its built-in media-extension set.
+    "media_extensions": "",
+    # Treat "Part 1" / "(1)" multi-part title punctuation as equivalent.
+    "ignore_part_format_differences": True,
     "theme": "Dark",            # "Dark" | "Light" | "Auto"
     "theme_color": "#0078d4",   # Windows 11 accent blue
     # Global view preferences (apply to the Identify page layout).

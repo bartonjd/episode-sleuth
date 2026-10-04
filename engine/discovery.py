@@ -146,16 +146,28 @@ def build_suggested_filename(show: str, season: Optional[int],
 
 def discover_media(path_dir: str,
                    media_exts: Union[str, Iterable[str], None] = None) -> List[str]:
-    """List media files in *path_dir* whose extension is allowed.
+    """List media files under *path_dir* whose extension is allowed.
 
     *media_exts* may be a set/iterable of extensions or a comma-separated
     string (see :func:`parse_media_exts`). Defaults to the built-in
     ``MEDIA_EXTS`` when not supplied.
+
+    Directories are scanned **recursively** (via :func:`os.walk`) so media
+    nested in sub-folders (e.g. ``Season 4/Disc1/Title_t00.mkv``) is found. If
+    *path_dir* is itself a single media file, it is returned directly when its
+    extension matches. The result is a sorted list of absolute paths.
     """
     exts = parse_media_exts(media_exts) if media_exts else set(MEDIA_EXTS)
-    files = []
-    for name in sorted(os.listdir(path_dir)):
-        full = os.path.join(path_dir, name)
-        if os.path.isfile(full) and os.path.splitext(name)[1].lower() in exts:
-            files.append(full)
-    return files
+
+    # Allow passing a single file directly.
+    if os.path.isfile(path_dir):
+        if os.path.splitext(path_dir)[1].lower() in exts:
+            return [os.path.abspath(path_dir)]
+        return []
+
+    files: List[str] = []
+    for root, _dirs, names in os.walk(path_dir):
+        for name in names:
+            if os.path.splitext(name)[1].lower() in exts:
+                files.append(os.path.join(root, name))
+    return sorted(files)

@@ -951,6 +951,15 @@ class SettingsInterface(QWidget):
             name = getattr(self, "_dl_model_name", "Vosk model")
             self.model_progress_label.setText(
                 f"{name} downloaded successfully.")
+            # Auto-persist the just-downloaded model choice so it is remembered
+            # across sessions even if the user never clicks Save afterwards.
+            # (Previously the selection was lost on the next launch.)
+            size = self._selected_model_size()
+            self.cfg.update(vosk_model_size=size)
+            self.cfg.save()
+            self._saved_model_size = size
+            if isinstance(getattr(self, "_original", None), dict):
+                self._original["vosk_model_size"] = size
         elif outcome == "failed":
             self.model_progress_label.setVisible(True)
             # Text was already set by _on_dl_failed; just keep it visible.

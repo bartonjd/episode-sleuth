@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import time
 from typing import TYPE_CHECKING, Optional
 
@@ -146,13 +145,13 @@ class BuildInterface(QWidget):
                 edit.setText(native_path(p))
 
     def _default_db_path(self) -> str:
-        """Return a per-user, platform-appropriate default database path."""
-        if sys.platform == "win32":
-            base = os.getenv("APPDATA") or os.path.expanduser("~")
-            return os.path.join(base, "EpisodeSleuth", "fingerprints.db")
-        return os.path.join(
-            os.path.expanduser("~"), ".local", "share", "episodesleuth",
-            "fingerprints.db")
+        """Return a per-user, platform-appropriate default database path.
+
+        Delegates to the shared ``gui_config.default_db_path`` so Build and
+        Identify always agree on the default library location.
+        """
+        from gui_config import default_db_path
+        return default_db_path()
 
     def _ensure_db_path(self) -> str:
         """Resolve the fingerprint database path, creating one if needed.

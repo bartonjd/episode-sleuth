@@ -34,6 +34,28 @@ def test_discover_media_empty_dir(tmp_path):
     assert discover_media(str(tmp_path)) == []
 
 
+def test_discover_media_recurses_subdirs(tmp_path):
+    """discover_media walks nested subdirectories (e.g. Season/Disc layouts)."""
+    top = tmp_path / "top.mkv"
+    top.write_bytes(b"x")
+    season = tmp_path / "Season 4" / "Disc1"
+    season.mkdir(parents=True)
+    (season / "nested.mp4").write_bytes(b"x")
+    (season / "readme.txt").write_bytes(b"x")
+
+    found = discover_media(str(tmp_path))
+    names = sorted(os.path.basename(p) for p in found)
+    assert names == ["nested.mp4", "top.mkv"]
+
+
+def test_discover_media_single_file_path(tmp_path):
+    """A direct path to one media file returns just that file."""
+    f = tmp_path / "episode.mkv"
+    f.write_bytes(b"x")
+    found = discover_media(str(f))
+    assert [os.path.basename(p) for p in found] == ["episode.mkv"]
+
+
 def test_discover_media_custom_extension_filter(tmp_path):
     """A custom extension list restricts discovery to just those types."""
     for name in ["a.mkv", "b.mp4", "c.avi", "d.mov"]:

@@ -72,11 +72,38 @@ def load_config(path: Optional[str] = None) -> dict:
     to the typed :func:`load_typed_config` so there is a single source of truth.
     """
     path = path or DEFAULT_CONFIG_PATH
+    # Auto-create a real config.json the first time we load so users have a
+    # concrete, editable engine config on disk instead of only in-memory
+    # defaults. Best-effort: a read-only location simply keeps using defaults.
+    ensure_config_file(path)
     try:
         return load_typed_config(path).engine.to_engine_dict()
     except Exception as exc:  # never let config wiring break the engine
         logging.warning("Could not load config from %s (%s); using defaults.", path, exc)
         return dict(_DEFAULT_ENGINE_CONFIG)
+
+
+def ensure_config_file(path: Optional[str] = None) -> str:
+    """Write the default engine config to *path* if it does not exist yet.
+
+    Returns the resolved path. Never raises: if the file cannot be written
+    (e.g. a read-only directory) a warning is logged and the in-memory defaults
+    continue to be used.
+    """
+    path = path or DEFAULT_CONFIG_PATH
+    if os.path.exists(path):
+        return path
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(_DEFAULT_ENGINE_CONFIG, fh, indent=2)
+        logging.info("Created default engine config at %s", path)
+    except OSError as exc:
+        logging.warning("Could not create config at %s (%s); using defaults.",
+                        path, exc)
+    return path
 
 
 # Hardcoded engine defaults used when no config.json is present.
