@@ -15,7 +15,7 @@ when the project root is on ``sys.path`` (which is the case after
 ``pip install -e .`` or when running from the project directory).
 """
 
-__version__ = "1.05b2"
+__version__ = "1.07b"
 __author__ = "audio-fingerprint contributors"
 __license__ = "MIT"
 
