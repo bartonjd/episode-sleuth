@@ -427,6 +427,17 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
                 notes_parts.append(
                     f"ambiguous: runner-up within {runner_up_margin:.0%}")
 
+        # Whether the phonetic match itself is trustworthy. This is decided
+        # purely by the match-quality gates above (no match / low confidence /
+        # ambiguous near-tie). A duration or runtime discrepancy must NOT
+        # downgrade a phonetically confident match to "review": those lengths
+        # are often off because the reference runtime is a broadcast slot
+        # (e.g. a 45m episode listed in a 60m slot) rather than evidence of a
+        # wrong-episode match. When the match is confident we can still assert
+        # the correct name (rename / correct) and report the length gap as a
+        # note instead of a blocking review flag.
+        confident_match = best is not None and not needs_review
+
         # Optional runtime sanity check
         if best is not None and runtimes:
             exp = runtimes.get(best.episode_id) or runtimes.get(
@@ -434,7 +445,8 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
             if exp:
                 diff = abs(duration / 60.0 - float(exp))
                 if diff > args.runtime_tolerance:
-                    needs_review = True
+                    if not confident_match:
+                        needs_review = True
                     notes_parts.append(
                         f"runtime {duration/60:.0f}m vs expected {exp}m")
 
@@ -459,14 +471,23 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
             if expected_sec and expected_sec > 0:
                 rel_diff = abs(duration - expected_sec) / float(expected_sec)
                 if rel_diff > tol:
-                    if dur_source in ("tvmaze", "manual"):
-                        # Authoritative runtime (TVMaze lookup or a manual edit):
-                        # a large mismatch is
-                        # a strong sign of a wrong-episode match -> flag review.
+                    if dur_source in ("tvmaze", "manual") and not confident_match:
+                        # Authoritative runtime (TVMaze lookup or a manual edit)
+                        # AND a weak phonetic match: a large mismatch is a strong
+                        # sign of a wrong-episode match -> flag review.
                         needs_review = True
                         notes_parts.append(
                             f"duration mismatch: file is {duration/60:.0f}m, "
                             f"episode should be ~{expected_sec/60:.0f}m "
+                            f"({rel_diff*100:.0f}% off)")
+                    elif dur_source in ("tvmaze", "manual"):
+                        # Phonetically confident but the lengths differ. This is
+                        # usually a listed-runtime quirk (broadcast slot vs actual
+                        # content), not a wrong match, so surface it as a note and
+                        # let the naming verdict (rename/correct) stand.
+                        notes_parts.append(
+                            f"length differs: file is {duration/60:.0f}m vs "
+                            f"listed ~{expected_sec/60:.0f}m "
                             f"({rel_diff*100:.0f}% off)")
                     else:
                         # Subtitle-derived runtime is only a rough proxy (a
@@ -485,8 +506,8 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
             ext = os.path.splitext(fname)[1]
             suggested_filename = build_suggested_filename(
                 best.title, best.season, best.episode, best.episode_title, ext)
-            if needs_review:
-                # Not confident enough to assert the correct name.
+            if not confident_match:
+                # Not confident enough in the match to assert the correct name.
                 name_status = "unknown"
             elif (file_season is not None and file_episode is not None
                   and file_season == best.season

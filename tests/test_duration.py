@@ -117,16 +117,22 @@ def test_subtitle_source_mismatch_does_not_flag_review(
     assert "duration mismatch" not in result.notes
 
 
-def test_tvmaze_source_mismatch_flags_review(
+def test_tvmaze_mismatch_with_confident_match_does_not_flag_review(
         monkeypatch, ref_db_path, engine_cfg, fp_cfg, sample_audio,
         ep1_noisy_transcript):
-    """A large mismatch against an authoritative TVMaze runtime flags review."""
+    """A TVMaze runtime mismatch must NOT downgrade a *confident* phonetic
+    match to review: listed runtimes are often broadcast slots (e.g. a 45m
+    episode listed in a 60m slot), so a confident match stays actionable
+    (rename/correct) and the length gap is reported only as a note."""
     _set_all_durations(ref_db_path, 120, "tvmaze")  # 2m authoritative vs ~23m
     result = _identify(monkeypatch, ref_db_path, engine_cfg, fp_cfg,
                        sample_audio, ep1_noisy_transcript, duration=1400.0)
     assert result.guess is not None
-    assert result.needs_review
-    assert "duration mismatch" in result.notes
+    # Sample matches with high confidence, so the length gap is a note only.
+    assert not result.needs_review
+    assert "length differs" in result.notes
+    # The naming verdict is still asserted (file has no S/E -> rename).
+    assert result.name_status == "rename"
 
 
 def test_matching_tvmaze_duration_no_flag(

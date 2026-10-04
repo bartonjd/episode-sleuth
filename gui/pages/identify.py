@@ -415,8 +415,12 @@ class IdentifyInterface(QWidget):
         hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(self.C_CHECK, QHeaderView.Fixed)
         hdr.setSectionResizeMode(self.C_NOTES, QHeaderView.Fixed)
+        # The qfluentwidgets table delegate paints the checkbox at
+        # cell_x + 15 spanning 19px (right edge at +34), so a 32px column
+        # clips it. Give the fixed checkbox column enough room to show the
+        # whole indicator with a little breathing space on both sides.
         widths = {
-            self.C_CHECK: 32, self.C_FILE: 230, self.C_STATUS: 80,
+            self.C_CHECK: 48, self.C_FILE: 230, self.C_STATUS: 80,
             self.C_EPISODE: 90, self.C_TITLE: 200, self.C_SUGGESTED: 230,
             self.C_MATCH: 80, self.C_AGREE: 110, self.C_NOTES: 46,
         }
@@ -624,10 +628,16 @@ class IdentifyInterface(QWidget):
     def _restore_column_widths(self) -> None:
         """Apply any column widths saved in a previous session."""
         saved = self._ident_get("column_widths", {}) or {}
+        # The checkbox and notes columns are Fixed width and sized to fit their
+        # painted glyphs; never let a stale saved value (e.g. an old 32px
+        # checkbox width that clipped the indicator) override them.
+        fixed_cols = {self.C_CHECK, self.C_NOTES}
         for col_str, width in saved.items():
             try:
                 col, w = int(col_str), int(width)
             except (TypeError, ValueError):
+                continue
+            if col in fixed_cols:
                 continue
             if 0 <= col < self.table.columnCount() and w > 0:
                 self.table.setColumnWidth(col, w)

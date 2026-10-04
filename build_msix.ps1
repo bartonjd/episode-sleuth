@@ -55,6 +55,28 @@ function Ok($m)   { Write-Host "[OK] $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "[!] $m" -ForegroundColor Yellow }
 function Fail($m) { Write-Host "[X] $m" -ForegroundColor Red }
 
+# Normalise the version to a valid MSIX Identity/@Version. The MSIX schema
+# requires four integer parts in 0..65535 with NO leading zeros, so a value
+# derived from a tag like "1.07b" (-> "1.07.0.0") would be rejected by
+# MakeAppx ("'1.07.0.0' violates pattern constraint"). Strip any leading
+# zeros per segment (1.07.0.0 -> 1.7.0.0) and pad/truncate to exactly 4 parts.
+$rawVersion = $Version
+$parts = @()
+foreach ($seg in ($Version -split '\.')) {
+    # Keep only the leading digits of each segment (drops any stray suffix).
+    $digits = ([regex]::Match($seg, '^\d+')).Value
+    if ([string]::IsNullOrEmpty($digits)) { $digits = '0' }
+    # [int] cast removes leading zeros; clamp to the MSIX max of 65535.
+    $n = [int]$digits
+    if ($n -gt 65535) { $n = 65535 }
+    $parts += $n
+}
+while ($parts.Count -lt 4) { $parts += 0 }
+$Version = ($parts[0..3] -join '.')
+if ($Version -ne $rawVersion) {
+    Write-Host "[*] Normalised MSIX version '$rawVersion' -> '$Version'" -ForegroundColor Cyan
+}
+
 if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
     throw "Version must have 4 numeric parts, e.g. 1.0.0.0 (got '$Version')."
 }
