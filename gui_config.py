@@ -65,6 +65,11 @@ DEFAULTS: Dict[str, Any] = {
     # Extensions scanned when identifying a folder (comma-separated). "" lets the
     # engine fall back to its built-in media-extension set.
     "media_extensions": "",
+    # How deep to scan subfolders when identifying a folder:
+    #   0  = this folder only (no recursion)
+    #   1  = one level down (the folder and its immediate subfolders)
+    #  -1  = all subfolders (unlimited recursion)
+    "scan_depth": 1,
     # Treat "Part 1" / "(1)" multi-part title punctuation as equivalent.
     "ignore_part_format_differences": True,
     "theme": "Dark",            # "Dark" | "Light" | "Auto"

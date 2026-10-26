@@ -33,6 +33,7 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CheckBox,
+    ComboBox,
     DoubleSpinBox,
     InfoBar,
     InfoBarPosition,
@@ -57,6 +58,7 @@ from qfluentwidgets import (
 
 from engine import (
     FileResult,
+    build_sample_points,
     episode_id_str,
     titles_equivalent,
     write_csv,
@@ -90,6 +92,9 @@ from ..constants import (
     PILL_HIGH,
     PILL_LOW,
     PILL_MED,
+    SCAN_DEPTH_LABELS,
+    index_to_scan_depth,
+    scan_depth_to_index,
 )
 from ..path_utils import native_path
 from ..widgets import Card, CollapsibleCard, FlowWidget, _path_row
@@ -221,10 +226,19 @@ class IdentifyInterface(QWidget):
         grid.setHorizontalSpacing(24)
         grid.setVerticalSpacing(12)
 
+        # qfluentwidgets' inline SpinBox overlays two ~31px stepper buttons on
+        # the right edge *without* reserving room for them in sizeHint() (~119px
+        # for a SpinBox). When the grid sizes a column to that hint the buttons
+        # cover almost the whole text area, so the value is invisible (only a
+        # sliver shows at the far left - the blank-spinbox bug on Windows).
+        # Pin a comfortable minimum width so the digits always have room.
+        SPIN_MIN_W = 140
+
         grid.addWidget(BodyLabel("Samples per file"), 0, 0)
         self.samples_spin = SpinBox()
         self.samples_spin.setRange(1, 15)
         self.samples_spin.setValue(int(self.cfg.get("samples_per_file", 5)))
+        self.samples_spin.setMinimumWidth(SPIN_MIN_W)
         grid.addWidget(self.samples_spin, 1, 0)
 
         grid.addWidget(BodyLabel("Sample length (s)"), 0, 1)
@@ -232,6 +246,7 @@ class IdentifyInterface(QWidget):
         self.samplelen_spin.setRange(4.0, 30.0)
         self.samplelen_spin.setSingleStep(1.0)
         self.samplelen_spin.setValue(float(self.cfg.get("sample_length", 12.0)))
+        self.samplelen_spin.setMinimumWidth(SPIN_MIN_W)
         grid.addWidget(self.samplelen_spin, 1, 1)
 
         grid.addWidget(BodyLabel("Review below confidence"), 0, 2)
@@ -239,15 +254,25 @@ class IdentifyInterface(QWidget):
         self.review_spin.setRange(0.05, 0.95)
         self.review_spin.setSingleStep(0.05)
         self.review_spin.setValue(float(self.cfg.get("review_confidence", 0.35)))
+        self.review_spin.setMinimumWidth(SPIN_MIN_W)
         grid.addWidget(self.review_spin, 1, 2)
 
-        grid.addWidget(BodyLabel("Parallel workers"), 0, 3)
+        grid.addWidget(BodyLabel("Scan subfolders"), 0, 3)
+        self.depth_combo = ComboBox()
+        self.depth_combo.addItems(SCAN_DEPTH_LABELS)
+        self.depth_combo.setMinimumWidth(SPIN_MIN_W)
+        self.depth_combo.setCurrentIndex(
+            scan_depth_to_index(self.cfg.get("scan_depth", 1)))
+        grid.addWidget(self.depth_combo, 1, 3)
+
+        grid.addWidget(BodyLabel("Parallel workers"), 0, 4)
         self.workers_spin = SpinBox()
         self.workers_spin.setRange(1, 16)
         self.workers_spin.setValue(int(self.cfg.get("max_workers", 4)))
-        grid.addWidget(self.workers_spin, 1, 3)
+        self.workers_spin.setMinimumWidth(SPIN_MIN_W)
+        grid.addWidget(self.workers_spin, 1, 4)
 
-        grid.setColumnStretch(4, 1)
+        grid.setColumnStretch(5, 1)
         opt_card.addLayout(grid)
         root.addWidget(opt_card)
 
@@ -496,14 +521,21 @@ class IdentifyInterface(QWidget):
         need = widget.sizeHint().height()
         lay = getattr(self, "top_layout", None)
         if lay is not None:
-            # The widget's own sizeHint() is the reliable figure: it accounts
-            # for heightForWidth (the actions row is a FlowWidget whose
-            # *layout* sizeHint over-reports a tall multi-row height as if the
-            # buttons wrapped, even though they sit on one row at the real
-            # width). Only fold in the layout's minimumSize as a lower floor -
-            # never its sizeHint, which would inflate the pane and push its
-            # content down over the filter row below (the z-order overlap).
             need = max(need, lay.minimumSize().height())
+        # The actions bar is a FlowWidget: its sizeHint reports only a SINGLE
+        # row, so widget.sizeHint() above under-counts the height whenever the
+        # buttons wrap onto extra rows (this is what let the wrapped row paint
+        # over the filter/dry-run row at ~1200px). Add the real wrapped height
+        # for the current width, minus the single row already counted.
+        actions = getattr(self, "actions_widget", None)
+        if actions is not None and actions.isVisible():
+            aw = actions.width() or widget.width() or self.width()
+            if aw > 0:
+                wrapped = actions.flow.heightForWidth(aw)
+                single = actions.sizeHint().height()
+                extra = wrapped - single
+                if extra > 0:
+                    need += extra
         widget.setMinimumHeight(need)
         # Enforce it on the splitter too. setChildrenCollapsible(False) stops a
         # pane from vanishing, but a stale saved size can still hand the top
@@ -734,6 +766,63 @@ class IdentifyInterface(QWidget):
         super().resizeEvent(event)
         if not self._restoring_layout:
             self._update_auto_hidden()
+            self._fill_table_width()
+            # Defer the top-pane re-sync so the FlowWidget has already relaid
+            # its buttons at the new width (its heightForWidth is only correct
+            # after the resize settles). This keeps a wrapped actions row from
+            # ever painting over the filter/dry-run row below it.
+            QTimer.singleShot(0, self._sync_top_pane_min)
+
+    def _fill_table_width(self) -> None:
+        """Grow the flexible columns so the table fills the viewport width.
+
+        The table keeps every column user-resizable (Interactive), so after a
+        maximise the saved pixel widths can leave empty space on the right. This
+        distributes any slack proportionally across the File / Episode Title /
+        Suggested Name columns (and reclaims it when the window shrinks) without
+        disturbing the fixed or user-hidden columns.
+        """
+        table = getattr(self, "table", None)
+        if table is None or self._restoring_layout:
+            return
+        avail = table.viewport().width()
+        if avail <= 0:
+            return
+        flex = [c for c in (self.C_FILE, self.C_TITLE, self.C_SUGGESTED)
+                if not table.isColumnHidden(c)]
+        if not flex:
+            return
+        # Width of every currently-visible column.
+        used = sum(table.columnWidth(c) for c in range(table.columnCount())
+                   if not table.isColumnHidden(c))
+        slack = avail - used
+        if slack == 0:
+            return
+        # Minimum sensible widths for the flexible columns so shrinking never
+        # collapses them to nothing.
+        floor = {self.C_FILE: 160, self.C_TITLE: 140, self.C_SUGGESTED: 160}
+        self._restoring_layout = True
+        try:
+            if slack > 0:
+                # Hand the extra space out evenly across the flexible columns.
+                per = slack // len(flex)
+                rem = slack - per * len(flex)
+                for i, c in enumerate(flex):
+                    add = per + (1 if i < rem else 0)
+                    table.setColumnWidth(c, table.columnWidth(c) + add)
+            else:
+                # Reclaim overflow from the flexible columns down to their floor.
+                deficit = -slack
+                for c in flex:
+                    if deficit <= 0:
+                        break
+                    cur = table.columnWidth(c)
+                    take = min(cur - floor.get(c, 80), deficit)
+                    if take > 0:
+                        table.setColumnWidth(c, cur - take)
+                        deficit -= take
+        finally:
+            self._restoring_layout = False
 
     def _toggle_column(self, col: int, visible: bool) -> None:
         """Show or hide a single column from the header context menu and
@@ -807,6 +896,8 @@ class IdentifyInterface(QWidget):
             self._prompt_model_download(model_size)
             return
 
+        scan_depth = index_to_scan_depth(self.depth_combo.currentIndex())
+
         # persist the choices the user just made
         self.cfg.update(
             last_source=source,
@@ -814,11 +905,14 @@ class IdentifyInterface(QWidget):
             sample_length=float(self.samplelen_spin.value()),
             max_workers=int(self.workers_spin.value()),
             review_confidence=float(self.review_spin.value()),
+            scan_depth=scan_depth,
         )
         self.cfg.save()
 
         n = max(1, int(self.samples_spin.value()))
-        points = [0.5] if n == 1 else [round((i + 1) / (n + 1), 4) for i in range(n)]
+        # Sample the informative middle of each file (skip intro/credits) via the
+        # shared band-based point generator so the GUI and CLI stay consistent.
+        points = build_sample_points(n)
         params = SimpleNamespace(
             config_path=self.win.current_engine_config() or None,
             points=points,
@@ -830,6 +924,7 @@ class IdentifyInterface(QWidget):
             primary_language=self.cfg.get("primary_language", "Auto-detect"),
             show_title=self.cfg.get("last_show_title", ""),
             media_extensions=self.cfg.get("media_extensions", "") or None,
+            scan_depth=scan_depth,
             ignore_part_format=bool(
                 self.cfg.get("ignore_part_format_differences", True)),
         )

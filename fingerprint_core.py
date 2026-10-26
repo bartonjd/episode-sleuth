@@ -685,6 +685,27 @@ class FingerprintDB:
         cur.execute("SELECT hash FROM fingerprints WHERE media_id=?", (media_id,))
         return [r["hash"] for r in cur.fetchall()]
 
+    def hash_document_frequencies(self) -> Tuple[Dict[str, int], int]:
+        """Return ``(hash -> number of distinct media containing it, media count)``.
+
+        Computed directly from the existing ``fingerprints`` table with a single
+        grouped aggregate (the ``idx_fp_hash`` index keeps this fast), so it
+        works on any existing database with no rebuild. Used to derive IDF-style
+        rarity weights so distinctive dialogue counts for more than filler that
+        appears in every episode.
+        """
+        cur = self.conn.cursor()
+        cur.execute("SELECT COUNT(*) AS n FROM media")
+        row = cur.fetchone()
+        n_docs = int(row["n"]) if row is not None else 0
+        df: Dict[str, int] = {}
+        cur.execute(
+            "SELECT hash, COUNT(DISTINCT media_id) AS c "
+            "FROM fingerprints GROUP BY hash")
+        for r in cur.fetchall():
+            df[r["hash"]] = int(r["c"])
+        return df, n_docs
+
     def media_ids_for_episodes(
             self, episodes: Iterable[Tuple[Optional[str], Optional[int], Optional[int]]],
     ) -> List[int]:

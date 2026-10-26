@@ -41,7 +41,12 @@ from .discovery import (
     sanitize_filename,
     titles_equivalent,
 )
-from .matcher import identify_one, sample_windows, transcribe_samples
+from .matcher import (
+    build_sample_points,
+    identify_one,
+    sample_windows,
+    transcribe_samples,
+)
 from .scoring import apply_metadata_boosts, run_fuzzy_stage, score_matches
 from .types import (
     ALL_SUPPORTED_FORMATS,
@@ -66,7 +71,7 @@ __all__ = [
     # scoring
     "score_matches", "run_fuzzy_stage", "apply_metadata_boosts",
     # matcher
-    "identify_one", "transcribe_samples", "sample_windows",
+    "identify_one", "transcribe_samples", "sample_windows", "build_sample_points",
     # batch
     "batch_identify", "write_csv", "write_json",
 ]

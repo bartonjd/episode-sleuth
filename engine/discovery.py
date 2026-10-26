@@ -144,30 +144,65 @@ def build_suggested_filename(show: str, season: Optional[int],
     return sanitize_filename(stem) + (ext or "")
 
 
+def native_fs_path(path: str) -> str:
+    """Return *path* with separators native to the current OS.
+
+    This is the single OS path-translation layer the discovery walk routes
+    every produced path through, so results use backslashes on Windows and
+    forward slashes elsewhere (mirrors ``gui.path_utils.native_path`` but lives
+    in the engine so it has no GUI dependency). ``os.path.normpath`` performs
+    the separator conversion; empty input is returned unchanged.
+    """
+    if not path:
+        return path
+    return os.path.normpath(path)
+
+
+def _depth_of(root: str, base: str) -> int:
+    """How many directory levels *root* is below *base* (base itself is 0)."""
+    rel = os.path.relpath(root, base)
+    if rel == os.curdir:
+        return 0
+    return rel.count(os.sep) + 1
+
+
 def discover_media(path_dir: str,
-                   media_exts: Union[str, Iterable[str], None] = None) -> List[str]:
+                   media_exts: Union[str, Iterable[str], None] = None,
+                   depth: int = -1) -> List[str]:
     """List media files under *path_dir* whose extension is allowed.
 
     *media_exts* may be a set/iterable of extensions or a comma-separated
     string (see :func:`parse_media_exts`). Defaults to the built-in
     ``MEDIA_EXTS`` when not supplied.
 
-    Directories are scanned **recursively** (via :func:`os.walk`) so media
-    nested in sub-folders (e.g. ``Season 4/Disc1/Title_t00.mkv``) is found. If
-    *path_dir* is itself a single media file, it is returned directly when its
-    extension matches. The result is a sorted list of absolute paths.
+    *depth* controls how far subfolders are scanned:
+
+    * ``0``  - only the top folder (no recursion).
+    * ``1``  - the top folder and its immediate subfolders (one level down).
+    * ``-1`` - all subfolders, unlimited recursion (the default, so existing
+      callers keep the previous fully-recursive behaviour).
+
+    If *path_dir* is itself a single media file, it is returned directly when
+    its extension matches. The result is a sorted list of absolute paths, each
+    routed through :func:`native_fs_path` so the separators are OS-native.
     """
     exts = parse_media_exts(media_exts) if media_exts else set(MEDIA_EXTS)
 
     # Allow passing a single file directly.
     if os.path.isfile(path_dir):
         if os.path.splitext(path_dir)[1].lower() in exts:
-            return [os.path.abspath(path_dir)]
+            return [native_fs_path(os.path.abspath(path_dir))]
         return []
 
+    base = os.path.abspath(path_dir)
     files: List[str] = []
-    for root, _dirs, names in os.walk(path_dir):
+    for root, dirs, names in os.walk(base):
+        cur_depth = _depth_of(root, base)
+        # Stop descending once we have reached the requested depth. Pruning
+        # ``dirs`` in-place is how os.walk is told not to recurse further.
+        if depth >= 0 and cur_depth >= depth:
+            dirs[:] = []
         for name in names:
             if os.path.splitext(name)[1].lower() in exts:
-                files.append(os.path.join(root, name))
+                files.append(native_fs_path(os.path.join(root, name)))
     return sorted(files)

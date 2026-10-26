@@ -27,8 +27,10 @@ from .discovery import build_suggested_filename, episode_id_str
 from .scoring import (
     _adaptive_review_threshold,
     _build_weighted_query,
+    apply_idf_weights,
     apply_metadata_boosts,
     dialogue_density,
+    library_hash_idf,
     run_fuzzy_stage,
     run_ngram_stage,
 )
@@ -89,6 +91,39 @@ def _ffmpeg_extract(path: str, start_s: float, length_s: float,
     except OSError as exc:
         logging.debug("  ffmpeg extract failed: %s", exc)
         return False
+
+
+# Default fraction of the runtime skipped at the start and end when choosing
+# sample positions. The opening (recap / theme / titles) and the closing
+# (credits / preview) are dominated by music, silence and boilerplate that match
+# many episodes, so sampling the central band (here ~10%-90%, the middle 80%)
+# puts every window on real dialogue. Backward compatible: callers that pass
+# explicit points are untouched.
+DEFAULT_SAMPLE_MARGIN = 0.10
+
+
+def build_sample_points(n: int,
+                        margin_start: float = DEFAULT_SAMPLE_MARGIN,
+                        margin_end: Optional[float] = None) -> List[float]:
+    """Distribute *n* sample fractions across the central band of a file.
+
+    The first ``margin_start`` and last ``margin_end`` (defaults to
+    ``margin_start``) of the runtime are avoided so the intro and end credits are
+    skipped. Points are spread evenly across ``[margin_start, 1 - margin_end]``
+    inclusive, so for the default 10% margin and n=5 the points are
+    ``[0.10, 0.30, 0.50, 0.70, 0.90]`` - the informative middle 80%.
+    """
+    n = max(1, int(n))
+    if margin_end is None:
+        margin_end = margin_start
+    lo = max(0.0, min(0.45, float(margin_start)))
+    hi = 1.0 - max(0.0, min(0.45, float(margin_end)))
+    if hi <= lo:  # pathological margins - fall back to a safe central band
+        lo, hi = 0.10, 0.90
+    if n == 1:
+        return [round((lo + hi) / 2.0, 4)]
+    span = hi - lo
+    return [round(lo + span * i / (n - 1), 4) for i in range(n)]
 
 
 def sample_windows(duration: float, points: List[float],
@@ -305,6 +340,13 @@ def identify_one(path: str, db_path: str, fp_cfg: FingerprintConfig,
             # Stage 1: exact phonetic shingle match, time-weighted per sample.
             query_hashes, query_weights = _build_weighted_query(
                 per_window, duration, fp_cfg)
+            # Rarity (IDF) weighting: scale each shingle by how distinctive it is
+            # across the reference library so rare, episode-specific dialogue
+            # counts for more than filler shared by every episode. Computed
+            # lazily from the existing DB (cached, no rebuild needed).
+            idf = library_hash_idf(db)
+            if idf:
+                apply_idf_weights(query_weights, idf)
             rows = db.lookup(query_hashes)
             results = score_matches(query_hashes, rows, cfg.get("matching", {}),
                                     query_weights=query_weights)

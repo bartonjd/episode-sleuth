@@ -107,7 +107,10 @@ class IdentifyWorker(QThread):
                 # engine config.json default when the GUI has not set one.
                 media_exts = getattr(self.params, "media_extensions", None) \
                     or cfg.get("identify", {}).get("media_extensions")
-                media = discover_media(self.source, media_exts)
+                # Scan depth: 0 top only, 1 one level down, -1 all subfolders.
+                # Default -1 preserves the previous fully-recursive behaviour.
+                scan_depth = int(getattr(self.params, "scan_depth", -1))
+                media = discover_media(self.source, media_exts, depth=scan_depth)
             else:
                 media = [self.source]
             if not media:

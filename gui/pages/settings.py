@@ -56,7 +56,12 @@ DOCS_URL = "https://github.com/bartonjd/episode-sleuth/blob/main/README.md"
 # the engine so config.json, discovery and this UI all share one definition.
 from engine.types import ALL_SUPPORTED_FORMATS, DEFAULT_MEDIA_EXTS
 
-from ..constants import DEFAULT_DB
+from ..constants import (
+    DEFAULT_DB,
+    SCAN_DEPTH_LABELS,
+    index_to_scan_depth,
+    scan_depth_to_index,
+)
 from ..path_utils import native_path
 from ..widgets import Card, TagInputWidget, _path_row
 from ..workers import ModelDownloadWorker
@@ -372,15 +377,27 @@ class SettingsInterface(QWidget):
                          "(case-insensitive). Add one per chip; click the x "
                          "to remove."), 1, 0, 1, 3)
 
-        idf_grid.addWidget(BodyLabel("Ignore part-format differences"), 2, 0)
+        idf_grid.addWidget(BodyLabel("Scan subfolders"), 2, 0,
+                           Qt.AlignLeft | Qt.AlignTop)
+        self.depth_combo = ComboBox()
+        self.depth_combo.addItems(SCAN_DEPTH_LABELS)
+        self.depth_combo.setCurrentIndex(
+            scan_depth_to_index(self.cfg.get("scan_depth", 1)))
+        self.depth_combo.currentIndexChanged.connect(self._on_field_changed)
+        idf_grid.addWidget(self.depth_combo, 2, 1, alignment=Qt.AlignLeft)
+        idf_grid.addWidget(
+            CaptionLabel("Default depth used when identifying a folder. The "
+                         "Identify page can override this per run."), 3, 0, 1, 3)
+
+        idf_grid.addWidget(BodyLabel("Ignore part-format differences"), 4, 0)
         self.part_switch = SwitchButton()
         self.part_switch.setChecked(
             bool(self.cfg.get("ignore_part_format_differences", True)))
-        idf_grid.addWidget(self.part_switch, 2, 1, alignment=Qt.AlignLeft)
+        idf_grid.addWidget(self.part_switch, 4, 1, alignment=Qt.AlignLeft)
         idf_grid.addWidget(
             CaptionLabel("Treat \"Part 1\", \"(1)\", \"(Part 1)\" and "
                          "\"Part I\" as the same, so multi-part episodes are "
-                         "not flagged for rename over punctuation."), 3, 0, 1, 3)
+                         "not flagged for rename over punctuation."), 5, 0, 1, 3)
         idf_grid.setColumnStretch(1, 1)
         idf_card.addLayout(idf_grid)
         root.addWidget(idf_card)
@@ -553,6 +570,7 @@ class SettingsInterface(QWidget):
             "vosk_model_size": self._selected_model_size(),
             "primary_language": self.lang_combo.currentText(),
             "media_extensions": self.exts_input.text(),
+            "scan_depth": index_to_scan_depth(self.depth_combo.currentIndex()),
             "ignore_part_format_differences": bool(self.part_switch.isChecked()),
             "view_density": self.density_combo.currentText(),
             "view_mode": self.mode_combo.currentText(),
@@ -653,6 +671,8 @@ class SettingsInterface(QWidget):
         self.lang_combo.setCurrentText(orig.get("primary_language", "Auto-detect"))
         self.exts_input.set_tags(
             orig.get("media_extensions", DEFAULT_MEDIA_EXTS))
+        self.depth_combo.setCurrentIndex(
+            scan_depth_to_index(orig.get("scan_depth", 1)))
         self.part_switch.setChecked(
             bool(orig.get("ignore_part_format_differences", True)))
         # Re-apply the theme in case the live preview changed it.
@@ -1002,6 +1022,7 @@ class SettingsInterface(QWidget):
             vosk_model_size=size,
             primary_language=self.lang_combo.currentText(),
             media_extensions=self.exts_input.text() or DEFAULT_MEDIA_EXTS,
+            scan_depth=index_to_scan_depth(self.depth_combo.currentIndex()),
             ignore_part_format_differences=bool(self.part_switch.isChecked()),
             view_density=self.density_combo.currentText(),
             view_mode=self.mode_combo.currentText(),

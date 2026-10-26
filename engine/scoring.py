@@ -17,7 +17,9 @@ from __future__ import annotations
 import difflib
 import logging
 import math
+import os
 import re
+import threading
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -40,7 +42,99 @@ __all__ = [
     # Accuracy helpers (word frequency, n-grams, names, dialogue density)
     "token_ngrams", "ngram_similarity", "document_frequencies", "idf_weights",
     "extract_character_names", "name_overlap_bonus", "dialogue_density",
+    "library_hash_idf", "apply_idf_weights",
 ]
+
+
+# ---------------------------------------------------------------------------
+# IDF-style rarity weighting of reference-library shingle hashes
+#
+# score_matches already accepts a per-hash ``query_weights`` map, so weighting
+# rare shingles more heavily is a matter of multiplying the existing time-weight
+# by a rarity factor derived from how many episodes each hash appears in. The
+# factors are computed lazily from the existing DB (no rebuild) and cached per
+# database file + mtime so a whole batch shares one computation.
+# ---------------------------------------------------------------------------
+# Rarity factors are normalised so the mean is ~1.0 and clamped to this band.
+# Keeping the mean near 1.0 means the overall confidence scale barely moves
+# (so the confident/review thresholds stay sensible); the win comes from the
+# RELATIVE boost distinctive dialogue gets over common filler.
+_IDF_FACTOR_MIN = 0.35
+_IDF_FACTOR_MAX = 3.0
+# Below this many reference episodes IDF is noise (every token looks "rare"),
+# so weighting is skipped and plain time-weights are used.
+_IDF_MIN_DOCS = 3
+
+_IDF_CACHE: Dict[str, Tuple[float, int, Dict[str, float]]] = {}
+_IDF_LOCK = threading.Lock()
+
+
+def _compute_idf_factors(df: Dict[str, int], n_docs: int) -> Dict[str, float]:
+    """Turn document frequencies into mean-normalised, clamped rarity factors."""
+    if n_docs < _IDF_MIN_DOCS or not df:
+        return {}
+    raw = idf_weights(df, n_docs)  # ln((1+N)/(1+df)) + 1, always > 0
+    if not raw:
+        return {}
+    mean = sum(raw.values()) / len(raw)
+    if mean <= 0:
+        return {}
+    factors: Dict[str, float] = {}
+    for tok, val in raw.items():
+        f = val / mean
+        if f < _IDF_FACTOR_MIN:
+            f = _IDF_FACTOR_MIN
+        elif f > _IDF_FACTOR_MAX:
+            f = _IDF_FACTOR_MAX
+        factors[tok] = f
+    return factors
+
+
+def library_hash_idf(db: FingerprintDB) -> Dict[str, float]:
+    """Return cached ``{hash -> rarity factor}`` for the library behind *db*.
+
+    Computed lazily from the existing ``fingerprints`` table and cached by
+    database path + mtime, so repeated calls across a batch (and across worker
+    threads, each with its own connection) reuse one computation. Returns an
+    empty mapping for tiny libraries, where IDF carries no signal. Never raises -
+    any failure falls back to "no weighting".
+    """
+    try:
+        path = getattr(db, "path", "") or ""
+        try:
+            mtime = os.path.getmtime(path) if path else 0.0
+        except OSError:
+            mtime = 0.0
+        key = os.path.abspath(path) if path else repr(db)
+        with _IDF_LOCK:
+            cached = _IDF_CACHE.get(key)
+            if cached is not None and cached[0] == mtime:
+                return cached[2]
+        df, n_docs = db.hash_document_frequencies()
+        factors = _compute_idf_factors(df, n_docs)
+        with _IDF_LOCK:
+            _IDF_CACHE[key] = (mtime, n_docs, factors)
+        return factors
+    except Exception:  # pragma: no cover - defensive: never break identification
+        logging.debug("library_hash_idf failed", exc_info=True)
+        return {}
+
+
+def apply_idf_weights(weights: Dict[str, float],
+                      idf: Dict[str, float]) -> Dict[str, float]:
+    """Multiply each hash's time-weight by its IDF rarity factor (in place).
+
+    Hashes with no factor (e.g. never seen in the library) keep their weight
+    unchanged. Returns the same dict for convenience. A no-op when *idf* is
+    empty, preserving the exact previous behaviour.
+    """
+    if not idf:
+        return weights
+    for h in list(weights.keys()):
+        f = idf.get(h)
+        if f:
+            weights[h] = weights[h] * f
+    return weights
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ import sys
 
 from engine.batch import batch_identify, write_csv, write_json
 from engine.discovery import discover_media
+from engine.matcher import build_sample_points
 from engine.types import DEFAULT_SAMPLE_POINTS
 from fingerprint_core import FingerprintConfig, load_config
 from logging_config import setup_logging
@@ -92,13 +93,11 @@ def main(argv=None):
     cfg = load_config(args.config)
     setup_logging("INFO" if args.verbose else "WARNING")
 
-    # sample points
+    # sample points: when not given explicitly, spread them across the
+    # informative middle band of each file (skipping intro/credits) via the
+    # shared generator so the CLI and GUI pick identical positions.
     if args.points is None:
-        n = max(1, args.samples)
-        if n == 1:
-            args.points = [0.5]
-        else:
-            args.points = [round((i + 1) / (n + 1), 4) for i in range(n)]
+        args.points = build_sample_points(max(1, args.samples))
     else:
         args.samples = len(args.points)
 

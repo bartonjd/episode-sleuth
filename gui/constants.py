@@ -40,3 +40,26 @@ LEGEND_REVIEW = "#c83737"   # red    - Review
 PILL_HIGH = "#2e7d32"       # green  - confident   (>= 0.70)
 PILL_MED = "#b8860b"        # amber  - moderate     (>= 0.40)
 PILL_LOW = "#c73737"        # red    - weak         (< 0.40)
+
+# Folder scan depth choices. The UI offers three options; each maps to the
+# integer depth understood by engine.discovery.discover_media:
+#   0  = this folder only (no recursion)
+#   1  = one level down (the folder and its immediate subfolders)
+#  -1  = all subfolders (unlimited recursion)
+SCAN_DEPTH_LABELS = ["This folder only", "One level down", "All subfolders"]
+SCAN_DEPTH_VALUES = [0, 1, -1]
+
+
+def scan_depth_to_index(depth) -> int:
+    """Map a stored depth integer to its combo-box index (default: one level)."""
+    try:
+        return SCAN_DEPTH_VALUES.index(int(depth))
+    except (TypeError, ValueError):
+        return SCAN_DEPTH_VALUES.index(1)
+
+
+def index_to_scan_depth(index: int) -> int:
+    """Map a combo-box index back to its depth integer (default: one level)."""
+    if 0 <= index < len(SCAN_DEPTH_VALUES):
+        return SCAN_DEPTH_VALUES[index]
+    return 1

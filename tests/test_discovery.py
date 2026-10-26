@@ -48,6 +48,46 @@ def test_discover_media_recurses_subdirs(tmp_path):
     assert names == ["nested.mp4", "top.mkv"]
 
 
+def test_discover_media_depth_zero_top_only(tmp_path):
+    """depth=0 scans only the top folder, ignoring any subfolders."""
+    (tmp_path / "top.mkv").write_bytes(b"x")
+    sub = tmp_path / "Season 1"
+    sub.mkdir()
+    (sub / "nested.mp4").write_bytes(b"x")
+
+    found = discover_media(str(tmp_path), depth=0)
+    names = sorted(os.path.basename(p) for p in found)
+    assert names == ["top.mkv"]
+
+
+def test_discover_media_depth_one_level(tmp_path):
+    """depth=1 scans the top folder and its immediate subfolders, but not
+    deeper (e.g. Season/Disc layouts two levels down are excluded)."""
+    (tmp_path / "top.mkv").write_bytes(b"x")
+    lvl1 = tmp_path / "Season 1"
+    lvl1.mkdir()
+    (lvl1 / "one.mp4").write_bytes(b"x")
+    lvl2 = lvl1 / "Disc1"
+    lvl2.mkdir()
+    (lvl2 / "two.mkv").write_bytes(b"x")
+
+    found = discover_media(str(tmp_path), depth=1)
+    names = sorted(os.path.basename(p) for p in found)
+    assert names == ["one.mp4", "top.mkv"]
+
+
+def test_discover_media_depth_all(tmp_path):
+    """depth=-1 (the default) recurses through all nested subfolders."""
+    (tmp_path / "top.mkv").write_bytes(b"x")
+    deep = tmp_path / "Season 1" / "Disc1"
+    deep.mkdir(parents=True)
+    (deep / "two.mkv").write_bytes(b"x")
+
+    found = discover_media(str(tmp_path), depth=-1)
+    names = sorted(os.path.basename(p) for p in found)
+    assert names == ["top.mkv", "two.mkv"]
+
+
 def test_discover_media_single_file_path(tmp_path):
     """A direct path to one media file returns just that file."""
     f = tmp_path / "episode.mkv"
