@@ -44,6 +44,12 @@ HERE = Path(__file__).resolve().parent
 CONFIG_FILE = "config.json"        # engine settings
 GUI_CONFIG_FILE = "gui_config.json"  # GUI preferences
 
+
+def _gui_config_path() -> str:
+    """Per-user path to gui_config.json (imported lazily to avoid a cycle)."""
+    from gui_config import gui_config_path
+    return gui_config_path()
+
 # Valid enum values used by validation.
 VALID_THEMES = ("Dark", "Light", "Auto")
 VALID_MODEL_SIZES = ("small", "large")
@@ -155,7 +161,13 @@ class AppConfig:
         """
         base = Path(config_dir) if config_dir else HERE
         engine_raw = _read_json(base / CONFIG_FILE)
-        gui_raw = _read_json(base / GUI_CONFIG_FILE)
+        # The GUI preferences live in a per-user writable directory (see
+        # gui_config.gui_config_path). Reading them from there - rather than
+        # next to the program - keeps this unified loader in sync with GuiConfig
+        # and avoids shadowing the real settings with a stale bundled copy.
+        gui_file = (base / GUI_CONFIG_FILE) if config_dir else Path(
+            _gui_config_path())
+        gui_raw = _read_json(gui_file)
 
         engine = EngineConfig.from_engine_dict(engine_raw)
         gui = GuiConfig.from_gui_dict(gui_raw)
@@ -189,7 +201,10 @@ class AppConfig:
         self.gui.db_path = self.db_path
         self.gui.vosk_model_size = self.engine.vosk_model_size
         _write_json(base / CONFIG_FILE, self.engine.to_engine_dict())
-        _write_json(base / GUI_CONFIG_FILE, self.gui.to_gui_dict())
+        # Write GUI prefs to the per-user writable location (matches load()).
+        gui_file = (base / GUI_CONFIG_FILE) if config_dir else Path(
+            _gui_config_path())
+        _write_json(gui_file, self.gui.to_gui_dict())
 
     # ---- interop -------------------------------------------------------
     def to_engine_dict(self) -> Dict[str, Any]:

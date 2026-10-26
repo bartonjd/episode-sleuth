@@ -10,8 +10,8 @@ if TYPE_CHECKING:
 
 import os
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -55,6 +55,7 @@ DOCS_URL = "https://github.com/bartonjd/episode-sleuth/blob/main/README.md"
 # Default media extensions offered in the Identify options card. Imported from
 # the engine so config.json, discovery and this UI all share one definition.
 from engine.types import ALL_SUPPORTED_FORMATS, DEFAULT_MEDIA_EXTS
+from gui_config import _clamp_int, gui_config_dir, gui_config_path
 
 from ..constants import (
     DEFAULT_DB,
@@ -63,8 +64,13 @@ from ..constants import (
     scan_depth_to_index,
 )
 from ..path_utils import native_path
-from ..widgets import Card, TagInputWidget, _path_row
+from ..widgets import Card, TagInputWidget, _path_row, prime_spinbox
 from ..workers import ModelDownloadWorker
+
+
+def _cfg_int(cfg, key, default, lo, hi):
+    """Read ``key`` from ``cfg`` and coerce/clamp it to an int in [lo, hi]."""
+    return _clamp_int(cfg.get(key, default), lo, hi, default)
 
 
 def _normalise_ext(raw: str) -> str:
@@ -286,8 +292,29 @@ class SettingsInterface(QWidget):
         eng_card.add(self.eng_edit, eng_browse)
         root.addWidget(eng_card)
 
+        # settings-file location card (read-only; helps the user find where
+        # preferences are stored and open that folder in their file manager).
+        loc_card = Card("Settings file location")
+        loc_card.add(CaptionLabel(
+            "Your preferences are saved to this per-user file. It lives outside "
+            "the installation folder so it stays writable and persists between "
+            "runs (and across app updates)."))
+        self.config_path_label = BodyLabel(native_path(gui_config_path()))
+        self.config_path_label.setWordWrap(True)
+        self.config_path_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse)
+        loc_open = PushButton("Open folder", self, FIF.FOLDER)
+        loc_open.clicked.connect(self._open_config_dir)
+        loc_card.add(self.config_path_label, loc_open)
+        root.addWidget(loc_card)
+
         root.addStretch(1)
         return self._wrap_scroll(content)
+
+    def _open_config_dir(self) -> None:
+        """Open the per-user settings folder in the OS file manager."""
+        QDesktopServices.openUrl(
+            QUrl.fromLocalFile(native_path(gui_config_dir())))
 
     def _build_appearance_tab(self) -> SingleDirectionScrollArea:
         content, root = self._new_page_body()
@@ -410,7 +437,8 @@ class SettingsInterface(QWidget):
         perf_grid.addWidget(BodyLabel("Max parallel workers"), 0, 0)
         self.workers_spin = SpinBox()
         self.workers_spin.setRange(1, 16)
-        self.workers_spin.setValue(int(self.cfg.get("max_workers", 4)))
+        prime_spinbox(self.workers_spin,
+                      _cfg_int(self.cfg, "max_workers", 4, 1, 16))
         perf_grid.addWidget(self.workers_spin, 1, 0)
         perf_grid.addWidget(
             CaptionLabel("Number of files identified at the same time. Higher "

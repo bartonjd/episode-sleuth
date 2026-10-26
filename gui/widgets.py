@@ -21,6 +21,51 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
+# Comfortable minimum width for a (Double)SpinBox. qfluentwidgets' inline
+# SpinBox lays out its two stepper buttons as *separate* widgets beside the
+# internal line edit (they do NOT overlay it), and those buttons plus spacing
+# eat roughly 92 logical px. At the old 140px minimum the line edit was left
+# with only ~48px - too little for a value like "30.00" once the DPI scale and
+# the edit's own frame are accounted for, which is what left the box blank on
+# Windows. 190px leaves the line edit ~100px, comfortably fitting the longest
+# value (5 chars) at 100% / 125% / 150% scaling alike.
+SPIN_MIN_WIDTH = 190
+
+
+def prime_spinbox(spin, value, min_width: int = SPIN_MIN_WIDTH) -> None:
+    """Set a (Double)SpinBox value robustly so it is never blank on screen.
+
+    The qfluentwidgets inline SpinBox gives its internal line edit only a narrow
+    slice of the widget width (the stepper buttons take the rest), so at higher
+    Windows DPI scale factors the displayed value could be clipped and appear
+    blank. This helper:
+
+      * pins a minimum width that leaves the line edit room for the value,
+      * left-aligns the digits so they are never scrolled out of view, and
+      * guarantees the line edit actually shows the value (some high-DPI setups
+        left it empty until the first edit).
+
+    It deliberately does NOT add a right-hand text margin: the buttons are not
+    overlaid on the line edit, so a margin would only push the value out of the
+    already-narrow edit (that was the real cause of the blank boxes).
+
+    The caller is responsible for setRange()/setDecimals() beforehand so the
+    value clamps correctly; ``value`` should already be the right type (the GUI
+    config coerces it on load).
+    """
+    spin.setMinimumWidth(min_width)
+    spin.setValue(value)
+    line = spin.lineEdit()
+    line.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    line.setCursorPosition(0)
+    if not line.text().strip():
+        # Fall back to the spin box's own formatting so the box is never blank.
+        try:
+            line.setText(spin.textFromValue(spin.value()))
+        except Exception:
+            line.setText(str(spin.value()))
+        line.setCursorPosition(0)
+
 
 class FlowLayout(QLayout):
     """A layout that arranges child widgets left-to-right and wraps to the next

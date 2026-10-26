@@ -47,7 +47,9 @@ def load_typed_config(path: Optional[str] = None):
     engine_raw = _cfgmod._read_json(engine_path)
     if not engine_raw:
         engine_raw = _DEFAULT_ENGINE_CONFIG
-    gui_raw = _cfgmod._read_json(_cfgmod.HERE / _cfgmod.GUI_CONFIG_FILE)
+    # Read GUI prefs from the per-user writable location (same file GuiConfig and
+    # AppConfig use) so engine callers see the user's saved model size / db path.
+    gui_raw = _cfgmod._read_json(_Path(_cfgmod._gui_config_path()))
 
     engine = _cfgmod.EngineConfig.from_engine_dict(engine_raw)
     gui = _cfgmod.GuiConfig.from_gui_dict(gui_raw)

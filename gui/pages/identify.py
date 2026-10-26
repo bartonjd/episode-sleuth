@@ -80,6 +80,8 @@ try:
 except Exception:  # pragma: no cover - only if deps are missing
     stt_utils = None
 
+from gui_config import _clamp_float, _clamp_int
+
 from .. import rename_history
 from ..constants import (
     COLOR_MEDIUM,
@@ -97,8 +99,25 @@ from ..constants import (
     scan_depth_to_index,
 )
 from ..path_utils import native_path
-from ..widgets import Card, CollapsibleCard, FlowWidget, _path_row
+from ..widgets import (
+    SPIN_MIN_WIDTH,
+    Card,
+    CollapsibleCard,
+    FlowWidget,
+    _path_row,
+    prime_spinbox,
+)
 from ..workers import IdentifyWorker
+
+
+def _cfg_int(cfg, key, default, lo, hi):
+    """Read ``key`` from ``cfg`` and coerce/clamp it to an int in [lo, hi]."""
+    return _clamp_int(cfg.get(key, default), lo, hi, default)
+
+
+def _cfg_float(cfg, key, default, lo, hi):
+    """Read ``key`` from ``cfg`` and coerce/clamp it to a float in [lo, hi]."""
+    return _clamp_float(cfg.get(key, default), lo, hi, default)
 
 # Order of the status filter tabs and the categories they map to.
 STATUS_TABS = ["All", "Rename", "Correct", "Review"]
@@ -226,35 +245,38 @@ class IdentifyInterface(QWidget):
         grid.setHorizontalSpacing(24)
         grid.setVerticalSpacing(12)
 
-        # qfluentwidgets' inline SpinBox overlays two ~31px stepper buttons on
-        # the right edge *without* reserving room for them in sizeHint() (~119px
-        # for a SpinBox). When the grid sizes a column to that hint the buttons
-        # cover almost the whole text area, so the value is invisible (only a
-        # sliver shows at the far left - the blank-spinbox bug on Windows).
-        # Pin a comfortable minimum width so the digits always have room.
-        SPIN_MIN_W = 140
+        # qfluentwidgets' inline SpinBox gives its line edit only a narrow slice
+        # of the widget width (the stepper buttons take the rest), so a 140px box
+        # left the edit ~48px - too little to show a value like "30.00" once the
+        # Windows DPI scale and frame are accounted for, which is why the boxes
+        # looked blank. prime_spinbox() pins a wider minimum (SPIN_MIN_WIDTH) so
+        # the digits always have room; reused here for the combo for alignment.
+        SPIN_MIN_W = SPIN_MIN_WIDTH
 
         grid.addWidget(BodyLabel("Samples per file"), 0, 0)
         self.samples_spin = SpinBox()
         self.samples_spin.setRange(1, 15)
-        self.samples_spin.setValue(int(self.cfg.get("samples_per_file", 5)))
-        self.samples_spin.setMinimumWidth(SPIN_MIN_W)
+        prime_spinbox(self.samples_spin,
+                      _cfg_int(self.cfg, "samples_per_file", 5, 1, 15),
+                      SPIN_MIN_W)
         grid.addWidget(self.samples_spin, 1, 0)
 
         grid.addWidget(BodyLabel("Sample length (s)"), 0, 1)
         self.samplelen_spin = DoubleSpinBox()
         self.samplelen_spin.setRange(4.0, 30.0)
         self.samplelen_spin.setSingleStep(1.0)
-        self.samplelen_spin.setValue(float(self.cfg.get("sample_length", 12.0)))
-        self.samplelen_spin.setMinimumWidth(SPIN_MIN_W)
+        prime_spinbox(self.samplelen_spin,
+                      _cfg_float(self.cfg, "sample_length", 12.0, 4.0, 30.0),
+                      SPIN_MIN_W)
         grid.addWidget(self.samplelen_spin, 1, 1)
 
         grid.addWidget(BodyLabel("Review below confidence"), 0, 2)
         self.review_spin = DoubleSpinBox()
         self.review_spin.setRange(0.05, 0.95)
         self.review_spin.setSingleStep(0.05)
-        self.review_spin.setValue(float(self.cfg.get("review_confidence", 0.35)))
-        self.review_spin.setMinimumWidth(SPIN_MIN_W)
+        prime_spinbox(self.review_spin,
+                      _cfg_float(self.cfg, "review_confidence", 0.35, 0.05, 0.95),
+                      SPIN_MIN_W)
         grid.addWidget(self.review_spin, 1, 2)
 
         grid.addWidget(BodyLabel("Scan subfolders"), 0, 3)
@@ -268,8 +290,9 @@ class IdentifyInterface(QWidget):
         grid.addWidget(BodyLabel("Parallel workers"), 0, 4)
         self.workers_spin = SpinBox()
         self.workers_spin.setRange(1, 16)
-        self.workers_spin.setValue(int(self.cfg.get("max_workers", 4)))
-        self.workers_spin.setMinimumWidth(SPIN_MIN_W)
+        prime_spinbox(self.workers_spin,
+                      _cfg_int(self.cfg, "max_workers", 4, 1, 16),
+                      SPIN_MIN_W)
         grid.addWidget(self.workers_spin, 1, 4)
 
         grid.setColumnStretch(5, 1)
